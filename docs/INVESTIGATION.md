@@ -97,3 +97,29 @@ Candidate experiments:
 - package: `com.xingin.xhs`
 - versionCode from download URL: `9334801`
 - SHA-256: `04ee354d9e76ada81eb27283a1c8998c06892e8e6f22c117320046e2acb49411`
+
+
+## 6. Controlled signature-spoof experiment
+
+A new experiment was added in the dedicated XHS repository after confirming that the plain re-signed control crashes.
+
+Action:
+https://github.com/KiriKira/xhs-apk-custom/actions/runs/35454748869
+
+The first implementation attempt failed while APKEditor rebuilt `classes10.dex`: adding references pushed a string index above the 16-bit `const-string` range in an unrelated class. The experiment was then switched to the dexlib2/JF assembler, which rebuilt successfully.
+
+The successful run identified:
+
+- application class: `com.xingin.xhs.app.XhsApplication`
+- application dex: `classes10.dex`
+- injected helper dex: `classes21.dex`
+- official XHS certificate SHA-256: `f375f0f6af7c94c364b35cd6f6a66d64aefae66e32f935b48773c0faad04c121`
+- persistent experimental signing certificate SHA-256: `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4`
+
+Three A/B outputs were produced:
+
+1. `xhs-signername-xingin-control.apk` — no code patch; re-signed with the persistent test key, but forces the v1 signer entry name to `XINGIN` so the APK contains `META-INF/XINGIN.SF` and `META-INF/XINGIN.RSA`.
+2. `xhs-java-signature-spoof-control.apk` — hooks the application startup and applies the Morphe/Reddit-style `PackageInfo.CREATOR` spoof so in-process Java `PackageInfo.signatures` / `SigningInfo` queries should observe the official XHS certificate. Its v1 signer entry remains `JHC`.
+3. `xhs-java-signature-spoof-xinginname.apk` — combines the Java `PackageInfo` spoof with the `XINGIN` v1 signer entry name.
+
+All three pass Android `apksigner verify` with the persistent experimental key. Runtime launch behavior still needs device A/B results.
