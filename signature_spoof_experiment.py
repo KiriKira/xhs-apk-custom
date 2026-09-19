@@ -512,7 +512,11 @@ def main():
     rebuilt = os.path.join(OUTPUT_DIR, "xhs-signature-spoof-rebuilt-temp.apk")
     if os.path.exists(rebuilt):
         os.remove(rebuilt)
-    run("java", "-Xmx8g", "-jar", apkeditor, "b", "-f", "-no-cache", "-i", decoded, "-o", rebuilt)
+    run(
+        "java", "-Xmx8g", "-jar", apkeditor,
+        "b", "-f", "-no-cache", "-dex-lib", "jf",
+        "-i", decoded, "-o", rebuilt,
+    )
 
     unsigned_spoof = os.path.join(OUTPUT_DIR, "xhs-java-signature-spoof-control-unsigned.apk")
     spoof_output = os.path.join(OUTPUT_DIR, "xhs-java-signature-spoof-control.apk")
