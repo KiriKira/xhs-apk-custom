@@ -1,0 +1,53 @@
+name: XHS Protection Analysis
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "protection_analysis.py"
+      - ".github/workflows/protection-analysis.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="/usr/local/lib/android/sdk"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - run: pip install -r requirements.txt
+
+      - name: Analyze XHS protection paths
+        env:
+          BASE_APK_URL: "https://dl.coolapk.com/down?pn=com.xingin.xhs&id=15276&v=MTUyNzY&type=apk&from=market-v13&vc=9334801&nd=0&h=3c30e27f"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python protection_analysis.py
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: xhs-protection-analysis
+          path: output_apks/protection-analysis.txt
+          if-no-files-found: error
+          retention-days: 7
