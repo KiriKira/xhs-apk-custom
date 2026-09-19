@@ -231,7 +231,7 @@ def find_tool(name):
     raise RuntimeError(f"{name} was not found")
 
 
-def sign_apk(unsigned_apk, output_apk):
+def sign_apk(unsigned_apk, output_apk, v1_signer_name=None):
     zipalign = find_tool("zipalign")
     apksigner = find_tool("apksigner")
     aligned = unsigned_apk + ".aligned.apk"
@@ -245,7 +245,7 @@ def sign_apk(unsigned_apk, output_apk):
     if not os.path.exists(keystore):
         raise RuntimeError(f"Keystore not found: {keystore}")
 
-    run(
+    sign_args = [
         apksigner,
         "sign",
         "--ks",
@@ -256,10 +256,11 @@ def sign_apk(unsigned_apk, output_apk):
         alias,
         "--key-pass",
         f"pass:{key_pass}",
-        "--out",
-        output_apk,
-        aligned,
-    )
+    ]
+    if v1_signer_name:
+        sign_args += ["--v1-signer-name", v1_signer_name]
+    sign_args += ["--out", output_apk, aligned]
+    run(*sign_args)
     run(apksigner, "verify", "--verbose", output_apk)
     os.remove(aligned)
 
