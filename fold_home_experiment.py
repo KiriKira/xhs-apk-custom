@@ -86,7 +86,7 @@ def write_report(app_name, app_smali, device_smali, app_dex, device_dex, helper_
 Known-good prerequisite:
 - Java PackageInfo/SigningInfo signature spoof is required for the re-signed APK to launch.
 - The plain re-signed control crashes.
-- The Java signature-spoof control launches successfully.
+- The device-tested working baseline is experiment #3: Java signature spoof + XINGIN v1 signer name.
 
 Application:
 - class: {app_name}
@@ -103,11 +103,13 @@ Injected helper dex:
 
 Variant A:
 - Java signature spoof
+- v1 signer entry name: XINGIN
 - DeviceInfoContainer.isHorizontalFolderDevice() -> true
 - isPad() left unchanged
 
 Variant B:
 - Java signature spoof
+- v1 signer entry name: XINGIN
 - DeviceInfoContainer.isHorizontalFolderDevice() -> true
 - DeviceInfoContainer.isPad() -> true
 
@@ -169,7 +171,7 @@ def main():
         helper_dex,
         unsigned_a,
     )
-    sign_apk(unsigned_a, output_a)
+    sign_apk(unsigned_a, output_a, v1_signer_name="XINGIN")
 
     # Variant B: add only isPad=true on top of A.
     patch_bool_method(device_smali, "isPad", True)
@@ -185,7 +187,7 @@ def main():
         helper_dex,
         unsigned_b,
     )
-    sign_apk(unsigned_b, output_b)
+    sign_apk(unsigned_b, output_b, v1_signer_name="XINGIN")
 
     report = write_report(
         app_name,
