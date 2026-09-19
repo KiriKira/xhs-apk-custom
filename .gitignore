@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Downloaded / generated artifacts
+*.apk
+*.apkm
+.base_apk_xhs/
+xhs_decoded/
+xhs_minimal_dex/
+output_apks/
+bins/
