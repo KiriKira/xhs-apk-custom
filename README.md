@@ -1,56 +1,58 @@
 # xhs-apk-custom
 
-Experimental Xiaohongshu (小红书) Android patching workspace focused on foldable-device layout behavior.
+Custom Xiaohongshu (小红书) Android build for foldable-device layout behavior.
 
-This repository was split out of `KiriKira/twitter-apk-custom` so XHS reverse-engineering, build history, signing, and CI stay independent from the Twitter/Piko project.
+The active build now targets one device-tested configuration only.
 
-## Goal
+## Current release configuration
 
-The original target is the China XHS package `com.xingin.xhs` on a Galaxy Z Fold8 sold outside mainland China. The observed mainland-device build exposes a denser foldable home layout (including four-column behavior) while the international device does not.
+Package: `com.xingin.xhs`
 
-OneLab provides the strongest current lead: its XHS foldable hook forces
-`com.xingin.adaptation.device.DeviceInfoContainer.isHorizontalFolderDevice()`
-to return true for the home-feed foldable path. Optional video-layout hooks also force `isPad()` and several DetailFeed feature gates.
+Base APK:
 
-## Current state
+- versionCode from the source URL: `9334801`
+- base SHA-256: `04ee354d9e76ada81eb27283a1c8998c06892e8e6f22c117320046e2acb49411`
 
-**Do not treat the current APK outputs as working releases.**
+The production APK applies:
 
-The important finding so far is that a **re-signed control APK also crashes at launch**, even when the foldable method is not patched. That means the foldable patch is not required to reproduce the crash. The remaining blocker is likely related to XHS signature / integrity / installer-origin protection, but the exact check has not yet been identified.
+- Java `PackageInfo` / `SigningInfo` signature spoof using the official XHS signing certificate;
+- v1 signer entry name `XINGIN`;
+- `DeviceInfoContainer.isHorizontalFolderDevice() -> true`;
+- `DeviceInfoContainer.isPad() -> true`.
 
-See [docs/INVESTIGATION.md](docs/INVESTIGATION.md) for the experiment history and [docs/SIGNATURE_PROTECTION.md](docs/SIGNATURE_PROTECTION.md) for candidate protection mechanisms and reference implementations.
+This is the configuration that passed device testing for startup/login and the desired foldable layout behavior.
 
-## Current base APK
+No `Build.MODEL`, `Build.MANUFACTURER`, or region spoofing is used.
 
-- Package: `com.xingin.xhs`
-- Version code supplied by the Coolapk URL: `9334801`
-- Base APK SHA-256 observed in CI: `04ee354d9e76ada81eb27283a1c8998c06892e8e6f22c117320046e2acb49411`
+## Output
 
-The direct download URL is kept in the workflow input/default for reproducibility.
+The only production artifact is:
 
-## Build layout
+`xhs-fold8-custom.apk`
 
-- `xhs_build_ci.py` — current experimental patch/build script.
-- `download_bins.py` — downloads APKEditor.
-- `.github/workflows/build-xhs.yml` — manual CI entry point.
-- `docs/` — investigation notes and references.
-- `ks_pkcs12.keystore` — persistent **test signing key**, migrated from the previous builder so future experimental APKs keep the same signing identity.
+`.github/workflows/build-xhs.yml` builds and verifies that APK on relevant `main` changes or manual dispatch.
 
-The committed key is intentionally only a test key. Because this repository is public, it must not be treated as a secret or used for security-sensitive distribution.
+The persistent test signing key is kept in `ks_pkcs12.keystore` so future custom builds retain the same signing identity. It is a public test key and must not be treated as a secret.
 
-## CI
+## Implementation
 
-The workflow is manual-only for now. This is intentional: current builds are diagnostic experiments and should not run automatically on every commit.
+- `build_xhs.py` — production builder.
+- `signature_spoof_experiment.py` / `xhs_build_ci.py` — shared implementation and historical investigation helpers.
+- `docs/INVESTIGATION.md` — experiment history.
+- `docs/SIGNATURE_PROTECTION.md` — signature/integrity notes.
+- `docs/REFERENCES.md` — source references.
 
-It currently produces:
+## Key findings
 
-- `xhs-fold8-custom-minimal.apk` — replaces only the touched DEX after patching.
-- `xhs-resigned-control.apk` — no foldable code change; official payload is re-signed with the persistent test key.
+A plain re-signed control APK crashed at startup. A Java-level `PackageInfo` / `SigningInfo` signature spoof made the re-signed app launch, and the tested `XINGIN` signer-name variant also supported login.
 
-The control APK is currently known to crash on launch.
+The final layout build additionally forces both the horizontal-fold and Pad gates.
 
 ## References
 
-- OneLab XHS fold hook: https://github.com/pigerzhu/OneLab/blob/main/app/src/main/java/io/github/pigerzhu/onelab/hook/applications/XhsFoldVideoHook.java
-- OneLab fold layout policy: https://github.com/pigerzhu/OneLab/blob/main/app/src/main/java/io/github/pigerzhu/onelab/hook/applications/XhsFoldLayoutPolicy.java
-- Morphe Reddit signature spoof reference: https://github.com/MorpheApp/morphe-patches/blob/main/extensions/reddit/src/main/java/app/morphe/extension/reddit/patches/SpoofSignaturePatch.java
+- OneLab XHS fold hook:
+  https://github.com/pigerzhu/OneLab/blob/main/app/src/main/java/io/github/pigerzhu/onelab/hook/applications/XhsFoldVideoHook.java
+- OneLab fold layout policy:
+  https://github.com/pigerzhu/OneLab/blob/main/app/src/main/java/io/github/pigerzhu/onelab/hook/applications/XhsFoldLayoutPolicy.java
+- Morphe Reddit signature spoof reference:
+  https://github.com/MorpheApp/morphe-patches/blob/main/extensions/reddit/src/main/java/app/morphe/extension/reddit/patches/SpoofSignaturePatch.java
