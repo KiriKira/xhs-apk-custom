@@ -1,0 +1,58 @@
+name: Publish v1.0.0
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/publish-v1.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download tested build artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: xhs-fold-home-experiment
+          path: release-src
+          github-token: ${{ github.token }}
+          run-id: 35477240426
+
+      - name: Prepare release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="c38b5e9a54b3df380a325d9ad33f9468e464e75da22a419acd5978f30cbb623d"
+          ACTUAL="$(sha256sum release-src/xhs-java-sigspoof-foldhome-pad.apk | awk '{print $1}')"
+          test "$ACTUAL" = "$EXPECTED"
+          mkdir -p release
+          cp release-src/xhs-java-sigspoof-foldhome-pad.apk release/xhs-fold8-custom.apk
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/release-notes.md <<'EOF'
+          First stable Fold8 custom build.
+
+          Tested configuration:
+          - Java PackageInfo/SigningInfo signature spoof using the official XHS certificate
+          - XINGIN v1 signer entry name
+          - isHorizontalFolderDevice() forced true
+          - isPad() forced true
+
+          Base package: com.xingin.xhs
+          Base versionCode: 9334801
+          Base APK SHA-256: 04ee354d9e76ada81eb27283a1c8998c06892e8e6f22c117320046e2acb49411
+          Released APK SHA-256: c38b5e9a54b3df380a325d9ad33f9468e464e75da22a419acd5978f30cbb623d
+
+          This release publishes the exact device-tested Pad variant from Actions run 35477240426.
+          EOF
+          gh release create v1.0.0             release/xhs-fold8-custom.apk             --repo "$GITHUB_REPOSITORY"             --target "$GITHUB_SHA"             --title "XHS Fold8 Custom v1.0.0"             --notes-file /tmp/release-notes.md
