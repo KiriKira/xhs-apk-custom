@@ -30,6 +30,8 @@ The only production artifact is:
 
 `xhs-fold8-custom.apk`
 
+Latest stable release: https://github.com/KiriKira/xhs-apk-custom/releases/tag/v1.0.0
+
 `.github/workflows/build-xhs.yml` builds and verifies that APK on relevant `main` changes or manual dispatch.
 
 The persistent test signing key is kept in `ks_pkcs12.keystore` so future custom builds retain the same signing identity. It is a public test key and must not be treated as a secret.
