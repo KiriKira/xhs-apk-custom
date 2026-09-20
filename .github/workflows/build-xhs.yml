@@ -1,23 +1,17 @@
-name: Build XHS Experimental APK
+name: Build XHS Fold8 Custom
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "build_xhs.py"
+      - "signature_spoof_experiment.py"
+      - "xhs_build_ci.py"
+      - "download_bins.py"
+      - "requirements.txt"
+      - ".github/workflows/build-xhs.yml"
   workflow_dispatch:
-    inputs:
-      base_apk_url:
-        description: "Direct URL for the original Xiaohongshu APK"
-        required: true
-        default: "https://dl.coolapk.com/down?pn=com.xingin.xhs&id=15276&v=MTUyNzY&type=apk&from=market-v13&vc=9334801&nd=0&h=3c30e27f"
-        type: string
-      patch_video_layout:
-        description: "Also force the experimental Pad/new-video layout gates"
-        required: true
-        default: false
-        type: boolean
-      run_diagnostics:
-        description: "Print signature/integrity search diagnostics"
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -25,7 +19,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -37,12 +31,12 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Install Android build tools
+      - name: Install Android tools
         shell: bash
         run: |
           set -euo pipefail
           SDK_ROOT="/usr/local/lib/android/sdk"
-          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0"
+          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"             "build-tools;35.0.0"             "platforms;android-35"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "$SDK_ROOT/build-tools/35.0.0" >> "$GITHUB_PATH"
@@ -55,47 +49,27 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Show persistent test signer
-        run: keytool -list -v -keystore ks_pkcs12.keystore -storepass 123456789 -alias jhc
-
-      - name: Build experimental APKs
+      - name: Build APK
         env:
-          BASE_APK_URL: ${{ inputs.base_apk_url }}
-          XHS_PATCH_VIDEO: ${{ inputs.patch_video_layout }}
+          BASE_APK_URL: "https://dl.coolapk.com/down?pn=com.xingin.xhs&id=15276&v=MTUyNzY&type=apk&from=market-v13&vc=9334801&nd=0&h=3c30e27f"
           SIGNING_KEYSTORE_PATH: ks_pkcs12.keystore
           KEYSTORE_PASSWORD: "123456789"
           KEY_ALIAS: "jhc"
           KEY_PASSWORD: "123456789"
           GITHUB_TOKEN: ${{ github.token }}
-        run: python xhs_build_ci.py
+        run: python build_xhs.py
 
-      - name: Signature / integrity diagnostics
-        if: ${{ inputs.run_diagnostics }}
+      - name: Verify APK
         shell: bash
         run: |
-          set +e
-          BASE=".base_apk_xhs/xhs-base.apk"
-          echo "===== ORIGINAL SIGNER ====="
-          apksigner verify --verbose --print-certs "$BASE"
-          echo "===== JAVA SIGNATURE / PACKAGE MANAGER REFERENCES ====="
-          grep -R -n -E 'GET_SIGNATURES|GET_SIGNING_CERTIFICATES|getPackageInfo\(|getPackageManager\(|getApkContentsSigners|hasSigningCertificate|SigningInfo;|Signature;|signatures:|signature' xhs_decoded/smali 2>/dev/null | head -n 500
-          echo "===== INTEGRITY / ANTI-TAMPER STRINGS ====="
-          grep -R -n -E 'integrity|tamper|verify.*sign|sign.*verify|certificate|cert_sha|sha256|sha-256|installer|com\.android\.vending|Play Integrity|pairip' xhs_decoded/smali 2>/dev/null | head -n 500
-          echo "===== NATIVE LIB CANDIDATES ====="
-          find xhs_decoded -type f -name '*.so' -print | head -n 200
+          set -euo pipefail
+          apksigner verify --verbose --print-certs output_apks/xhs-fold8-custom.apk
+          unzip -l output_apks/xhs-fold8-custom.apk 'META-INF/*' |             grep -E 'META-INF/XINGIN\.(SF|RSA)' >/dev/null
 
-      - name: Verify output signers
-        shell: bash
-        run: |
-          apksigner verify --verbose --print-certs output_apks/xhs-fold8-custom-minimal.apk
-          apksigner verify --verbose --print-certs output_apks/xhs-resigned-control.apk
-
-      - name: Upload experimental APKs
+      - name: Upload APK
         uses: actions/upload-artifact@v6
         with:
-          name: xhs-experimental-apks
-          path: |
-            output_apks/xhs-fold8-custom-minimal.apk
-            output_apks/xhs-resigned-control.apk
+          name: xhs-fold8-custom
+          path: output_apks/xhs-fold8-custom.apk
           if-no-files-found: error
           retention-days: 7
