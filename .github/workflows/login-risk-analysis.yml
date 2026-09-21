@@ -34,3 +34,5 @@ jobs:
           name: xhs-login-risk-analysis
           path: output_apks/login-risk-analysis.txt
           retention-days: 7
+
+# optimized static scan
