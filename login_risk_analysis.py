@@ -5,8 +5,8 @@ from xhs_build_ci import BINS_DIR,OUTPUT_DIR,download_apk,ensure_dirs,run,sha256
 
 URL="https://dl.coolapk.com/down?pn=com.xingin.xhs&id=15276&v=MTUyNzY&type=apk&from=market-v13&vc=9334801&nd=0&h=3c30e27f"
 PATS=re.compile(r"(安全|风险|异常|验证|登录|账号|手机号|手机号码|security|risk|abnormal|verify|challenge|login|signin|sms|captcha|country.?code|area.?code|\+86|mainland|oversea|device.?id|fingerprint|attest|integrity|root|magisk|xposed|tamper|one.?click|onekey|carrier|com/unicom/online/account|com/mobile/auth)",re.I)
-FIRST=re.compile(r"(login|account|auth|security|risk|passport)",re.I)
-NATIVE=re.compile(r"(login|account|phone|mobile|risk|security|verify|captcha|token|device|fingerprint|sign|cert|root|xposed|magisk|hook|tamper)",re.I)
+FIRST=re.compile(r"(login|account|auth|security|risk|passport|verify|phone|mobile)",re.I)
+NATIVE=re.compile(r"(login|account|phone|mobile|risk|security|verify|captcha|token|device|fingerprint|sign|cert|root|xposed|magisk|hook|tamper|base\\.apk|meta-inf|xingin\\.rsa|package|installer|proc/self|readlink|maps|sha1|sha256|attest|integrity|shield)",re.I)
 
 def ctx(lines,i,r=6):
     return "\n".join(f"{n+1:6d}: {lines[n]}" for n in range(max(0,i-r),min(len(lines),i+r+1)))
@@ -31,6 +31,60 @@ def main():
     hits.sort(key=lambda x:(-x[0],x[1],x[2]))
     for n,(s,rel,i,c) in enumerate(hits[:700],1):
         out += [f"[{n}] score={s} {rel}:{i+1}",c,""]
+    out += ["","## focused account/login routing and risk contexts",""]
+    focus=re.compile(r"(country|area.?code|phone|mobile|\\+86|oversea|mainland|state_token|need_verify_id|risk_frozen|security|fingerprint|shield|captcha|challenge|verify|device.?id|fid|login_type|loginType|one.?click|carrier|operator)",re.I)
+    n=0
+    for p in Path(dec,"smali").rglob("*.smali"):
+        rel=str(p).replace("\\\\","/")
+        if "/com/xingin/account/" not in rel and "/com/xingin/xhs/app/LoginApplication.smali" not in rel:
+            continue
+        try: lines=p.read_text(encoding="utf-8").splitlines()
+        except: continue
+        for i,line in enumerate(lines):
+            if focus.search(line):
+                n+=1; out += [f"[{n}] {rel}:{i+1}",ctx(lines,i,12),""]
+                if n>=450: break
+        if n>=450: break
+
+    out += ["","## first-party signature/integrity API use in Xingin code",""]
+    sig=re.compile(r"(PackageInfo;->signatures|PackageInfo;->signingInfo|getApkContentsSigners|getSigningCertificateHistory|hasSigningCertificate|Signature;->toByteArray|getPackageInfo|MessageDigest;->getInstance|CertificateFactory|sourceDir|base\\.apk|META-INF|XINGIN\\.RSA)",re.I)
+    n=0
+    for p in Path(dec,"smali").rglob("*.smali"):
+        rel=str(p).replace("\\\\","/")
+        if "/com/xingin/" not in rel and "/com/xingyin/" not in rel:
+            continue
+        try: lines=p.read_text(encoding="utf-8").splitlines()
+        except: continue
+        for i,line in enumerate(lines):
+            if sig.search(line):
+                n+=1; out += [f"[{n}] {rel}:{i+1}",ctx(lines,i,10),""]
+                if n>=350: break
+        if n>=350: break
+
+    out += ["","## security/fingerprint/shield class paths",""]
+    class_rx=re.compile(r"(security|secure|fingerprint|risk|shield|anti|device.?id|captcha|verify)",re.I)
+    paths=[]
+    for p in Path(dec,"smali").rglob("*.smali"):
+        rel=str(p).replace("\\\\","/")
+        if ("/com/xingin/" in rel or "/com/xingyin/" in rel) and class_rx.search(rel):
+            paths.append(rel)
+    out += sorted(paths)[:500]
+
+    out += ["","## native-load contexts in Xingin code",""]
+    load_rx=re.compile(r"(loadLibrary|System;->load|securebase|dexvmp|entryexpro|xEF4|capahook|apkpatch)",re.I)
+    n=0
+    for p in Path(dec,"smali").rglob("*.smali"):
+        rel=str(p).replace("\\\\","/")
+        if "/com/xingin/" not in rel and "/com/xingyin/" not in rel:
+            continue
+        try: lines=p.read_text(encoding="utf-8").splitlines()
+        except: continue
+        for i,line in enumerate(lines):
+            if load_rx.search(line):
+                n+=1; out += [f"[{n}] {rel}:{i+1}",ctx(lines,i,12),""]
+                if n>=250: break
+        if n>=250: break
+
     out += ["","## first-party callers into carrier SDKs",""]
     n=0
     for p in Path(dec,"smali").rglob("*.smali"):
