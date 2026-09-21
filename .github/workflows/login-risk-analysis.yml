@@ -1,0 +1,36 @@
+name: XHS Login Risk Analysis
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "login_risk_analysis.py"
+      - ".github/workflows/login-risk-analysis.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Analyze login/risk paths
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python login_risk_analysis.py
+      - uses: actions/upload-artifact@v6
+        with:
+          name: xhs-login-risk-analysis
+          path: output_apks/login-risk-analysis.txt
+          retention-days: 7
