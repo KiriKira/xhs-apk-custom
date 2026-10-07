@@ -14,7 +14,8 @@ PHONE_HINTS = ("手机号", "手机号码", "电话号码", "phone number", "mob
 OTP_HINTS = ("验证码", "短信码", "verification code", "sms code", "otp")
 PRIVACY = ("隐私政策", "用户协议", "个人信息保护", "privacy policy", "terms of service")
 UNSAFE = ("环境不安全", "环境异常", "设备环境异常", "设备环境不安全", "环境风险",
-          "unsafe environment", "abnormal environment")
+          "unsafe environment", "abnormal environment", "environment is unsafe",
+          "insecure environment", "environment is not secure")
 CHALLENGE = ("安全验证", "风险验证", "安全风险", "存在风险", "风险提示", "security verification", "unusual activity")
 CAPTCHA = ("人机验证", "滑动验证", "图形验证", "captcha", "complete the verification")
 AGREE = ("同意并继续", "同意并使用", "同意", "接受", "agree", "accept")
@@ -26,8 +27,13 @@ TERMS = ("用户协议", "隐私政策", "服务条款", "terms", "privacy polic
 def norm(s): return re.sub(r"\s+", " ", s or "").strip().lower()
 def attrs(n): return [n.attrib.get(k, "") for k in ("text", "content-desc", "hint", "hint-text", "resource-id")]
 def visible(n): return n.attrib.get("visible-to-user", "true").lower() != "false"
-def ui_text(root): return [norm(v) for n in root.iter() if visible(n) for v in attrs(n) if v]
+def ui_text(root, package=None):
+    return [norm(v) for n in root.iter() if visible(n)
+            and (package is None or n.attrib.get("package") == package)
+            for v in attrs(n) if v]
 def matches(texts, terms): return [p for p in terms if any(norm(p) in t for t in texts)]
+def package_visible(root, package):
+    return any(visible(n) and n.attrib.get("package") == package for n in root.iter())
 class Adb:
     def __init__(self, serial): self.base, self.timed_out = ["adb", "-s", serial], False
     def run(self, *args, timeout=15):
@@ -53,22 +59,25 @@ class Adb:
         if not m: return False
         x1, y1, x2, y2 = map(int, m.groups())
         return self.run("shell", "input", "tap", str((x1+x2)//2), str((y1+y2)//2))[0]
-def clickable(root, node):
+def clickable(root, node, package=None):
     parents, cur = {c: p for p in root.iter() for c in p}, node
     while cur is not None:
+        if package is not None and cur.attrib.get("package") != package:
+            return None
         if (visible(cur) and cur.attrib.get("enabled", "true") == "true"
                 and cur.attrib.get("clickable") == "true" and cur.attrib.get("bounds")):
             return cur
         cur = parents.get(cur)
     return None
-def action(adb, root, labels, preferred=False):
+def action(adb, root, labels, preferred=False, package=None):
     """Click exactly one semantic target; priority mode prefers earlier labels."""
     groups = []
     for label in labels:
         found = {}
         for node in root.iter():
-            if visible(node) and any(norm(v) == norm(label) for v in attrs(node)):
-                target = clickable(root, node)
+            if (visible(node) and (package is None or node.attrib.get("package") == package)
+                    and any(norm(v) == norm(label) for v in attrs(node))):
+                target = clickable(root, node, package)
                 if target is not None: found[id(target)] = target
         if found:
             groups.append((label, list(found.values())))
@@ -78,32 +87,39 @@ def action(adb, root, labels, preferred=False):
     if len(targets) != 1: return False, None, len(targets)
     label = groups[0][0]
     return adb.tap(next(iter(targets.values())).attrib.get("bounds")), label, 1
-def fields(root, hints, field_id="", field_bounds=""):
+def fields(root, hints, field_id="", field_bounds="", package=None):
     return [n for n in root.iter() if visible(n) and "edittext" in n.attrib.get("class", "").lower()
+            and (package is None or n.attrib.get("package") == package)
             and ((hints and any(h in " ".join(norm(v) for v in attrs(n)) for h in hints))
                  or (field_id and n.attrib.get("resource-id") == field_id)
                  or (not field_id and field_bounds and n.attrib.get("bounds") == field_bounds))]
-def country_state(root):
-    texts = ui_text(root)
+def country_state(root, package=None):
+    texts = ui_text(root, package)
     codes = {t for t in texts if re.fullmatch(r"\+\d{1,3}", t)}
     if len(codes) > 1: return "picker"
     if codes == {"+86"} or any(t in COUNTRY_NAMES for t in texts): return "cn"
     return "other" if codes else "unknown"
-def code_targets(root):
+def code_targets(root, package=None):
     found = {}
     for n in root.iter():
-        if visible(n) and any(re.fullmatch(r"\+\d{1,3}", norm(v)) for v in attrs(n)):
-            target = clickable(root, n)
+        if (visible(n) and (package is None or n.attrib.get("package") == package)
+                and any(re.fullmatch(r"\+\d{1,3}", norm(v)) for v in attrs(n))):
+            target = clickable(root, n, package)
             if target is not None: found[id(target)] = target
     return list(found.values())
-def terms_boxes(root):
+def terms_boxes(root, package=None):
     parents, found = {c: p for p in root.iter() for c in p}, []
     for n in root.iter():
-        if not visible(n) or n.attrib.get("checkable") != "true": continue
+        if (not visible(n) or n.attrib.get("checkable") != "true"
+                or (package is not None and n.attrib.get("package") != package)): continue
         context, cur = [], n
         for _ in range(3):
-            if cur is None: break
-            context.extend(attrs(cur)); context.extend(v for child in list(cur)[:8] for v in attrs(child)); cur = parents.get(cur)
+            if cur is None or (package is not None and cur.attrib.get("package") != package): break
+            context.extend(attrs(cur))
+            context.extend(v for child in list(cur)[:8]
+                           if package is None or child.attrib.get("package") == package
+                           for v in attrs(child))
+            cur = parents.get(cur)
         if any(h in norm(v) for v in context for h in TERMS): found.append(n)
     return found
 def load_phone(path):
@@ -141,37 +157,41 @@ def run(args):
         if root is None:
             if timed: report["timeout"], report["result_category"] = True, "timeout"; break
             time.sleep(1); continue
-        texts = ui_text(root)
+        if not package_visible(root, args.package):
+            report["result_category"] = "foreign_ui"
+            break
+        texts = ui_text(root, args.package)
         unsafe, captcha, challenge = matches(texts, UNSAFE), matches(texts, CAPTCHA), matches(texts, CHALLENGE)
         if unsafe:
             report["matched_prompt_keywords"], report["result_category"] = unsafe, "environment_unsafe"; break
         if captcha or challenge:
             report["matched_prompt_keywords"] = captcha or challenge
             report["result_category"] = "captcha_shown" if captcha else "security_challenge"; break
-        if sms_clicked and fields(root, OTP_HINTS):
+        if sms_clicked and fields(root, OTP_HINTS, package=args.package):
             report["otp_input_visible"], report["result_category"] = True, "otp_screen"; break
         if sms_clicked:
             if time.monotonic() >= sms_deadline:
                 report["result_category"] = "request_attempted_outcome_unconfirmed"; break
             time.sleep(1); continue
-        phone_fields = fields(root, PHONE_HINTS) if not phone_typed else fields(root, (), phone_field_id, phone_field_bounds)
+        phone_fields = (fields(root, PHONE_HINTS, package=args.package) if not phone_typed
+                        else fields(root, (), phone_field_id, phone_field_bounds, args.package))
         if country_opened and not phone_fields:
             if country_selected: break
-            clicked, label, count = action(adb, root, COUNTRY_NAMES)
+            clicked, label, count = action(adb, root, COUNTRY_NAMES, package=args.package)
             if clicked:
                 country_selected = True; report["matched_prompt_keywords"] = [label]
                 time.sleep(1); continue
             if count > 1: break
             time.sleep(1); continue
         if not phone_fields and matches(texts, PRIVACY):
-            clicked, _, count = action(adb, root, AGREE)
+            clicked, _, count = action(adb, root, AGREE, package=args.package)
             if clicked:
                 report["steps"]["privacy_accepted"] = True
                 report["matched_prompt_keywords"] = matches(texts, PRIVACY)[:3]
                 time.sleep(1); continue
             if count > 1: break
         if not phone_fields and not login_tapped:
-            clicked, label, count = action(adb, root, PHONE_LOGIN, preferred=True)
+            clicked, label, count = action(adb, root, PHONE_LOGIN, preferred=True, package=args.package)
             if clicked:
                 login_tapped = True; report["steps"]["phone_login_opened"] = True
                 report["matched_prompt_keywords"] = [label]; time.sleep(1); continue
@@ -179,13 +199,14 @@ def run(args):
         if not phone_fields:
             time.sleep(1); continue
         if len(phone_fields) != 1: break
-        country = country_state(root)
+        country = country_state(root, args.package)
         if country == "other" and not country_opened:
-            targets = code_targets(root)
+            targets = code_targets(root, args.package)
             if len(targets) != 1 or not adb.tap(targets[0].attrib.get("bounds")): break
             country_opened = True; time.sleep(1); continue
         if country == "unknown" and not country_opened:
-            clicked, _, _ = action(adb, root, ("国家/地区", "地区", "country/region", "country code"), True)
+            clicked, _, _ = action(adb, root, ("国家/地区", "地区", "country/region", "country code"),
+                                   True, args.package)
             if clicked: country_opened = True; time.sleep(1); continue
             break
         if country != "cn": break
@@ -195,7 +216,7 @@ def run(args):
             node = phone_fields[0]
             current = norm(node.attrib.get("text", ""))
             if current and (re.search(r"\d", current) or not any(h in current for h in PHONE_HINTS)): break
-            target = clickable(root, node)
+            target = clickable(root, node, args.package)
             if target is None or not adb.tap(target.attrib.get("bounds")): break
             phone_field_id = node.attrib.get("resource-id", "").strip()
             phone_field_bounds = node.attrib.get("bounds", "")
@@ -203,16 +224,16 @@ def run(args):
             if not ok:
                 report["timeout"], report["result_category"] = timed, "timeout" if timed else "unsupported_ui"; break
             phone_typed = True; report["steps"]["phone_entered"] = True; time.sleep(1); continue
-        boxes = terms_boxes(root)
+        boxes = terms_boxes(root, args.package)
         if len(boxes) != 1: break
         box = boxes[0]
         if box.attrib.get("checked") != "true":
             if terms_tapped: break
-            target = clickable(root, box)
+            target = clickable(root, box, args.package)
             if target is None or not adb.tap(target.attrib.get("bounds")): break
             terms_tapped = True; time.sleep(1); continue
         report["steps"]["terms_checked"] = True
-        clicked, label, count = action(adb, root, GET_CODE, preferred=True)
+        clicked, label, count = action(adb, root, GET_CODE, preferred=True, package=args.package)
         if clicked:
             sms_clicked, sms_deadline = True, time.monotonic() + 20
             deadline = max(deadline, sms_deadline)

@@ -281,7 +281,7 @@ jobs:
           test -s "$RUNNER_TEMP/waydroid-dbus-address"
           export DBUS_SESSION_BUS_ADDRESS="$(cat "$RUNNER_TEMP/waydroid-dbus-address")"
           echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
-          waydroid status
+          timeout 10 waydroid status || true
 
           waydroid_ip=""
           adb_ready=false
@@ -296,23 +296,26 @@ jobs:
               sys.exit(1)
           PYIP
           }
-          for attempt in $(seq 1 60); do
+          adb_deadline=$((SECONDS + 180))
+          attempt=0
+          while ((SECONDS < adb_deadline)); do
+            attempt=$((attempt + 1))
             if ! kill -0 "$supervisor_pid" 2>/dev/null; then break; fi
-            status_output="$(waydroid status 2>/dev/null || true)"
+            status_output="$(timeout 10 waydroid status 2>/dev/null || true)"
             echo "Waydroid status poll $attempt:"
             echo "$status_output"
             waydroid_ip="$(echo "$status_output" | awk -F: '/IP address:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
             if ! is_ipv4 "$waydroid_ip"; then
               echo "Waydroid status did not expose IPv4; checking the LXC lease address"
-              for lxc_ip in $(sudo lxc-info -P /var/lib/waydroid/lxc -n waydroid -iH 2>/dev/null || true); do
+              for lxc_ip in $(sudo timeout 8 lxc-info -P /var/lib/waydroid/lxc -n waydroid -iH 2>/dev/null || true); do
                 if is_ipv4 "$lxc_ip"; then waydroid_ip="$lxc_ip"; break; fi
               done
             fi
             if is_ipv4 "$waydroid_ip"; then
               test_serial="$waydroid_ip:5555"
               echo "Waydroid container IPv4 address: $waydroid_ip"
-              adb connect "$test_serial" || true
-              device_state="$(timeout 10 adb -s "$test_serial" get-state 2>/dev/null || true)"
+              timeout 8 adb connect "$test_serial" || true
+              device_state="$(timeout 5 adb -s "$test_serial" get-state 2>/dev/null || true)"
               if [ "$device_state" = device ]; then adb_ready=true; break; fi
             fi
             sleep 2
@@ -327,8 +330,11 @@ jobs:
           echo "TEST_SERIAL=$test_serial" >> "$GITHUB_ENV"
           echo "Waydroid serial ready: $test_serial"
           booted=""
-          for attempt in $(seq 1 60); do
-            booted="$(timeout 10 adb -s "$test_serial" shell getprop sys.boot_completed | tr -d '\r' || true)"
+          boot_deadline=$((SECONDS + 300))
+          attempt=0
+          while ((SECONDS < boot_deadline)); do
+            attempt=$((attempt + 1))
+            booted="$(timeout 5 adb -s "$test_serial" shell getprop sys.boot_completed | tr -d '\r' || true)"
             echo "Android boot poll $attempt sys.boot_completed=${booted:-<empty>}"
             if [ "$booted" = 1 ]; then break; fi
             sleep 5

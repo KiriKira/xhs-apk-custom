@@ -27,30 +27,33 @@ def load_otp(path):
     if not isinstance(code, str) or not OTP_RE.fullmatch(code): raise ValueError
     return code
 
-def edittexts(root):
-    return [n for n in root.iter() if ui.visible(n) and "edittext" in n.attrib.get("class", "").lower()]
+def edittexts(root, package):
+    return [n for n in root.iter() if ui.visible(n) and n.attrib.get("package") == package
+            and "edittext" in n.attrib.get("class", "").lower()]
 
-def unique_marker(root, labels):
+def unique_marker(root, labels, package):
     found = {}
     for node in root.iter():
-        if not ui.visible(node): continue
+        if not ui.visible(node) or node.attrib.get("package") != package: continue
         for key in ("text", "content-desc"):
             value = ui.norm(node.attrib.get(key, ""))
             for label in labels:
                 if value == ui.norm(label): found[id(node)] = label
     return (next(iter(found.values())) if len(found) == 1 else None), len(found)
 
-def otp_field(root):
-    semantic = ui.fields(root, ui.OTP_HINTS)
+def otp_field(root, package):
+    semantic = ui.fields(root, ui.OTP_HINTS, package=package)
     if len(semantic) == 1: return semantic[0]
     if semantic: return None
-    only = edittexts(root)
+    only = edittexts(root, package)
     return only[0] if len(only) == 1 else None
 
-def result_after_login(root, report):
-    if ui.fields(root, ui.PHONE_HINTS) or otp_field(root) is not None or ui.matches(ui.ui_text(root), OTP_PAGE):
+def result_after_login(root, report, package):
+    if (ui.fields(root, ui.PHONE_HINTS, package=package)
+            or otp_field(root, package) is not None
+            or ui.matches(ui.ui_text(root, package), OTP_PAGE)):
         return False
-    marker, count = unique_marker(root, PROFILE_MARKERS)
+    marker, count = unique_marker(root, PROFILE_MARKERS, package)
     if count == 1:
         report["logged_in"] = True
         report["matched_prompt_keywords"] = [marker]
@@ -77,7 +80,10 @@ def run(args):
         if root is None:
             if timed: report["timeout"], report["result_category"] = True, "timeout"; break
             time.sleep(1); continue
-        texts = ui.ui_text(root)
+        if not ui.package_visible(root, args.package):
+            report["result_category"] = "foreign_ui"
+            break
+        texts = ui.ui_text(root, args.package)
         unsafe, captcha, challenge = ui.matches(texts, ui.UNSAFE), ui.matches(texts, ui.CAPTCHA), ui.matches(texts, ui.CHALLENGE)
         if unsafe or captcha or challenge:
             report["matched_prompt_keywords"] = unsafe or captcha or challenge
@@ -89,10 +95,10 @@ def run(args):
             break
         otp_text = ui.matches(texts, OTP_PAGE)
         if report["otp_entered"]:
-            identity_fields = ui.fields(root, (), otp_field_id, otp_field_bounds)
+            identity_fields = ui.fields(root, (), otp_field_id, otp_field_bounds, args.package)
             field = identity_fields[0] if len(identity_fields) == 1 else None
         else:
-            field = otp_field(root)
+            field = otp_field(root, args.package)
         report["otp_input_visible"] = field is not None
         if not report["otp_entered"]:
             if otp_text and field is None:
@@ -107,7 +113,7 @@ def run(args):
             report["matched_prompt_keywords"] = otp_text[:3]
             otp_field_id = field.attrib.get("resource-id", "").strip()
             otp_field_bounds = field.attrib.get("bounds", "")
-            target = ui.clickable(root, field)
+            target = ui.clickable(root, field, args.package)
             if target is None or not adb.tap(target.attrib.get("bounds")): break
             report["otp_field_tapped"] = True
             ok, _, timed = adb.run("shell", "input", "text", code, timeout=12)
@@ -118,9 +124,9 @@ def run(args):
             submitted_deadline = time.monotonic() + 45
             deadline = max(deadline, submitted_deadline)
             continue
-        if result_after_login(root, report): break
+        if result_after_login(root, report, args.package): break
         if (field is not None or otp_text) and not report["verify_clicked"]:
-            clicked, label, count = ui.action(adb, root, VERIFY)
+            clicked, label, count = ui.action(adb, root, VERIFY, package=args.package)
             if count > 1: break
             if clicked:
                 report["verify_clicked"] = True
@@ -128,7 +134,7 @@ def run(args):
                 continue
         # A disappearing OTP field indicates an automatic submit; only then visit Me.
         if field is None and not otp_text and not me_tapped:
-            clicked, label, count = ui.action(adb, root, ME)
+            clicked, label, count = ui.action(adb, root, ME, package=args.package)
             if count > 1: break
             if clicked:
                 me_tapped = True
