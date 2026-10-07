@@ -78,39 +78,154 @@ jobs:
 
           config_file="/boot/config-$(uname -r)"
           binder_config_pattern='^CONFIG_ANDROID_BINDER_(IPC|DEVICES)=|^CONFIG_ANDROID_BINDERFS=|^# CONFIG_ANDROID_BINDER_(IPC|DEVICES) is not set|^# CONFIG_ANDROID_BINDERFS is not set'
+          binder_config_source=unavailable
+          binder_config_text=''
           if [ -r "$config_file" ]; then
-            printf 'kernel_config_source=boot-config\n'
-            grep -E "$binder_config_pattern" "$config_file" || printf 'binder_config_entries=not-found\n'
+            binder_config_source=boot-config
+            binder_config_text="$(grep -E "$binder_config_pattern" "$config_file" || true)"
           elif [ -r /proc/config.gz ]; then
-            printf 'kernel_config_source=proc-config-gz\n'
-            gzip -cd /proc/config.gz | grep -E "$binder_config_pattern" || printf 'binder_config_entries=not-found\n'
-          else
-            printf 'kernel_config_source=unavailable\n'
+            binder_config_source=proc-config-gz
+            binder_config_text="$(gzip -cd /proc/config.gz | grep -E "$binder_config_pattern" || true)"
           fi
+          printf 'kernel_config_source=%s\n' "$binder_config_source"
+          if [ -n "$binder_config_text" ]; then
+            printf '%s\n' "$binder_config_text"
+          else
+            printf 'binder_config_entries=not-found\n'
+          fi
+          binder_ipc_config="$(printf '%s\n' "$binder_config_text" | awk -F= '/^CONFIG_ANDROID_BINDER_IPC=/ { print $2; found=1; exit } /^# CONFIG_ANDROID_BINDER_IPC is not set$/ { print "not-set"; found=1; exit } END { if (!found) print "unknown" }')"
+          binderfs_config="$(printf '%s\n' "$binder_config_text" | awk -F= '/^CONFIG_ANDROID_BINDERFS=/ { print $2; found=1; exit } /^# CONFIG_ANDROID_BINDERFS is not set$/ { print "not-set"; found=1; exit } END { if (!found) print "unknown" }')"
+          printf 'binder_ipc_config=%s\n' "$binder_ipc_config"
+          printf 'binderfs_config=%s\n' "$binderfs_config"
 
           module_root="/lib/modules/$(uname -r)"
-          if [ -d "$module_root" ]; then
-            module_count="$(find "$module_root" -type f \( -name 'binder_linux.ko' -o -name 'binder_linux.ko.*' \) -print 2>/dev/null | wc -l | tr -d ' ')"
-            printf 'binder_module_file_count=%s\n' "$module_count"
-          else
-            printf 'binder_module_file_count=module-tree-unavailable\n'
-          fi
+          count_binder_module_files() {
+            if [ -d "$module_root" ]; then
+              find "$module_root" -type f \( -name 'binder_linux.ko' -o -name 'binder_linux.ko.*' \) -print 2>/dev/null | wc -l | tr -d ' '
+            else
+              printf '0\n'
+            fi
+          }
+          module_count="$(count_binder_module_files)"
+          printf 'binder_module_file_count_before_recovery=%s\n' "$module_count"
           if [ -d /sys/module/binder_linux ]; then
-            printf 'binder_module_preloaded=yes\n'
+            binder_module_preloaded=yes
           else
-            printf 'binder_module_preloaded=no\n'
+            binder_module_preloaded=no
+          fi
+          printf 'binder_module_preloaded=%s\n' "$binder_module_preloaded"
+
+          run_binder_modprobe() {
+            local phase="$1" output='' status=0
+            if output="$(sudo -n modprobe binder_linux 2>&1)"; then
+              status=0
+            else
+              status=$?
+            fi
+            printf 'binder_modprobe_%s_exit=%s\n' "$phase" "$status"
+            if [ "$status" -ne 0 ]; then
+              if [ -n "$output" ]; then
+                printf '%s\n' "$output" | sed -n '1,10p'
+              else
+                printf 'binder_modprobe_%s_output=empty\n' "$phase"
+              fi
+            fi
+            return "$status"
+          }
+          run_binder_modprobe initial || true
+          if [ -d /sys/module/binder_linux ]; then
+            binder_loaded_after_initial=yes
+          else
+            binder_loaded_after_initial=no
+          fi
+          printf 'binder_module_after_initial_modprobe=%s\n' "$binder_loaded_after_initial"
+
+          if [ "$binder_loaded_after_initial" = no ] && [ "$module_count" = 0 ] && { [ "$binder_ipc_config" = m ] || [ "$binderfs_config" = m ]; }; then
+            printf 'binder_package_recovery=eligible\n'
+            kernel_release="$(uname -r)"
+            extras_pkg="linux-modules-extra-${kernel_release}"
+            modules_pkg="linux-modules-${kernel_release}"
+            apt_update_output=''
+            if apt_update_output="$(timeout 180s sudo -n apt-get update -qq 2>&1)"; then
+              apt_update_status=0
+              printf 'apt_update=success\n'
+            else
+              apt_update_status=$?
+              printf 'apt_update=failed exit=%s\n' "$apt_update_status"
+              if [ -n "$apt_update_output" ]; then
+                printf '%s\n' "$apt_update_output" | sed -n '1,10p'
+              fi
+            fi
+
+            extra_policy="$(apt-cache policy "$extras_pkg" 2>&1 || true)"
+            modules_policy="$(apt-cache policy "$modules_pkg" 2>&1 || true)"
+            printf 'apt_policy_package=%s\n' "$extras_pkg"
+            if [ -n "$extra_policy" ]; then
+              printf '%s\n' "$extra_policy" | sed -n '1,12p'
+            else
+              printf 'apt_policy_output=empty\n'
+            fi
+            printf 'apt_policy_package=%s\n' "$modules_pkg"
+            if [ -n "$modules_policy" ]; then
+              printf '%s\n' "$modules_policy" | sed -n '1,12p'
+            else
+              printf 'apt_policy_output=empty\n'
+            fi
+            extra_candidate="$(printf '%s\n' "$extra_policy" | awk '/Candidate:/ { print $2; exit }')"
+            modules_candidate="$(printf '%s\n' "$modules_policy" | awk '/Candidate:/ { print $2; exit }')"
+            [ -n "$extra_candidate" ] || extra_candidate='(none)'
+            [ -n "$modules_candidate" ] || modules_candidate='(none)'
+            modules_status="$(dpkg-query -W -f='${db:Status-Status}' "$modules_pkg" 2>/dev/null || true)"
+            modules_installed_version="$(dpkg-query -W -f='${Version}' "$modules_pkg" 2>/dev/null || true)"
+            extra_status="$(dpkg-query -W -f='${db:Status-Status}' "$extras_pkg" 2>/dev/null || true)"
+            extra_installed_version="$(dpkg-query -W -f='${Version}' "$extras_pkg" 2>/dev/null || true)"
+            printf 'linux_modules_candidate=%s installed=%s\n' "$modules_candidate" "${modules_status:-no}"
+            printf 'linux_modules_extra_candidate=%s installed=%s\n' "$extra_candidate" "${extra_status:-no}"
+
+            run_exact_module_package_install() {
+              local package_spec="$1" reinstall="$2" install_output='' install_status=0
+              if [ "$reinstall" = yes ]; then
+                if install_output="$(timeout 240s sudo -n apt-get install -y --no-install-recommends --reinstall "$package_spec" 2>&1)"; then
+                  install_status=0
+                else
+                  install_status=$?
+                fi
+              else
+                if install_output="$(timeout 240s sudo -n apt-get install -y --no-install-recommends "$package_spec" 2>&1)"; then
+                  install_status=0
+                else
+                  install_status=$?
+                fi
+              fi
+              printf 'module_package_install=%s exit=%s reinstall=%s\n' "$package_spec" "$install_status" "$reinstall"
+              if [ "$install_status" -ne 0 ] && [ -n "$install_output" ]; then
+                printf '%s\n' "$install_output" | sed -n '1,10p'
+              fi
+              return "$install_status"
+            }
+
+            if [ "$apt_update_status" -eq 0 ] && [ "$extra_candidate" != '(none)' ]; then
+              if [ "$extra_status" = installed ] && [ "$extra_installed_version" = "$extra_candidate" ]; then
+                run_exact_module_package_install "${extras_pkg}=${extra_installed_version}" yes || true
+              else
+                run_exact_module_package_install "${extras_pkg}=${extra_candidate}" no || true
+              fi
+            elif [ "$apt_update_status" -eq 0 ] && [ "$modules_status" = installed ] && [ -n "$modules_installed_version" ] && [ "$modules_candidate" = "$modules_installed_version" ]; then
+              run_exact_module_package_install "${modules_pkg}=${modules_installed_version}" yes || true
+            else
+              printf 'module_package_install=skipped reason=no-safe-exact-candidate\n'
+            fi
+          else
+            printf 'binder_package_recovery=skipped reason=module-present-or-kernel-config-not-modular\n'
           fi
 
-          if sudo -n modprobe binder_linux >/dev/null 2>&1; then
-            printf 'binder_modprobe=success\n'
-          else
-            modprobe_status=$?
-            printf 'binder_modprobe=failed exit=%s\n' "$modprobe_status"
-          fi
+          run_binder_modprobe after_recovery || true
+          module_count="$(count_binder_module_files)"
+          printf 'binder_module_file_count_after_recovery=%s\n' "$module_count"
           if [ -d /sys/module/binder_linux ]; then
-            printf 'binder_module_after_modprobe=present\n'
+            printf 'binder_module_after_recovery=present\n'
           else
-            printf 'binder_module_after_modprobe=absent\n'
+            printf 'binder_module_after_recovery=absent\n'
           fi
 
           if awk '$2 == "binder" { found = 1 } END { exit !found }' /proc/filesystems; then
@@ -139,7 +254,7 @@ jobs:
             rmdir "$binderfs_dir" 2>/dev/null || true
           }
           trap cleanup_binderfs EXIT
-          if [ -d "$binderfs_dir" ] && timeout 10s sudo -n mount -t binder binder "$binderfs_dir" >/dev/null 2>&1; then
+          if [ -d "$binderfs_dir" ] && mount_output="$(timeout 10s sudo -n mount -t binder binder "$binderfs_dir" 2>&1)"; then
             binderfs_mounted=1
             printf 'binderfs_mount=success\n'
             if [ -c "$binderfs_dir/binder-control" ]; then
@@ -149,14 +264,22 @@ jobs:
             else
               printf 'binderfs_control=absent\n'
             fi
-            if timeout 10s sudo -n umount "$binderfs_dir" >/dev/null 2>&1; then
+            if umount_output="$(timeout 10s sudo -n umount "$binderfs_dir" 2>&1)"; then
               binderfs_mounted=0
               printf 'binderfs_unmount=success\n'
             else
-              printf 'binderfs_unmount=failed\n'
+              umount_status=$?
+              printf 'binderfs_unmount=failed exit=%s\n' "$umount_status"
+              if [ -n "$umount_output" ]; then
+                printf '%s\n' "$umount_output" | sed -n '1,10p'
+              fi
             fi
           else
-            printf 'binderfs_mount=failed\n'
+            mount_status=$?
+            printf 'binderfs_mount=failed exit=%s\n' "$mount_status"
+            if [ -n "${mount_output:-}" ]; then
+              printf '%s\n' "$mount_output" | sed -n '1,10p'
+            fi
           fi
 
           for tool in lxc-start waydroid weston; do
