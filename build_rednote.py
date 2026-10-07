@@ -30,6 +30,8 @@ from rednote_signature_compat import (
     next_dex_name,
     patch_application_startup,
 )
+from rednote_ad_patch import ADAPTER, patch_feed_bind, verify_compiled_feed_patch
+from rednote_ad_display_helper import build_ad_display_dex
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1305,6 +1307,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--fold-layout", action="store_true", help="Force the two existing fold-layout gates")
     parser.add_argument(
+        "--hide-feed-ads", action="store_true",
+        help="Hide discovery-feed ad cards after original binding; preserve requests and feed data",
+    )
+    parser.add_argument(
         "--signature-compat",
         action="store_true",
         help=(
@@ -1562,6 +1568,30 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             except Exception as exc:
                 raise BuildError(f"Could not prepare --signature-compat mode: {exc}") from exc
 
+        feed_ad_audit: dict[str, Any] = {"enabled": False}
+        if args.hide_feed_ads:
+            try:
+                ad_smali = find_smali_class(decoded_dir, ADAPTER)
+                feed_ad_audit = {"enabled": True, **patch_feed_bind(ad_smali)}
+                ad_touched_dex = dex_name_for_smali(decoded_dir, ad_smali)
+                touched_dex_names.add(ad_touched_dex)
+                ad_helper = build_ad_display_dex(temporary_root / "ad-display")
+                ad_helper_name = next_dex_name(merge_input)
+                while ad_helper_name in signature_compat_added_entries:
+                    ad_helper_name = f"classes{int(ad_helper_name[7:-4]) + 1}.dex"
+                signature_compat_added_entries[ad_helper_name] = ad_helper
+                signature_compat_added_names.add(ad_helper_name)
+                feed_ad_audit.update({
+                    "touchedDexEntry": ad_touched_dex,
+                    "helperClass": "dev.kiri.xhsads.FeedAdDisplay",
+                    "helperDexEntry": ad_helper_name,
+                    "helperDexSha256": sha256_file(ad_helper),
+                    "displayState": "View.GONE and zero item height; original state restored before rebinding",
+                })
+                warnings.append("--hide-feed-ads hides discovery-feed ad cards after original binding; no request or model filtering is applied.")
+            except Exception as exc:
+                raise BuildError(f"Could not prepare feed-ad display patch: {exc}") from exc
+
         if args.decode_dex:
             missing_touched_dex = touched_dex_names - set(args.decode_dex)
             if missing_touched_dex:
@@ -1636,6 +1666,8 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             changed_entries,
             added_entries=signature_compat_added_names,
         )
+        if args.hide_feed_ads:
+            feed_ad_audit["compiledVerification"] = verify_compiled_feed_patch(output_path)
         report = {
             "schemaVersion": 1,
             "sourceDescription": redact_phone_like_text(source_description),
@@ -1688,6 +1720,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 "methods": ["isHorizontalFolderDevice", "isPad"] if args.fold_layout else [],
                 "touchedDexEntries": sorted(fold_touched_dex_names),
             },
+            "feedAdDisplay": feed_ad_audit,
             "mainProcessCompatibility": {
                 **process_gate_audit,
                 "touchedDexEntry": process_gate_dex,

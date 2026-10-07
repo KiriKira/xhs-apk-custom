@@ -8,9 +8,11 @@ on:
       - "tools/rednote_private_input.py"
       - "tools/rednote_phone_test.py"
       - "tools/rednote_login_preview.py"
-      - "tools/rednote_otp_test.py"
       - "build_rednote.py"
       - "rednote_signature_compat.py"
+      - "rednote_ad_patch.py"
+      - "rednote_ad_display_helper.py"
+      - "tools/rednote-ad-display-smoke.jar"
       - "ks_pkcs12.keystore"
   workflow_dispatch:
     inputs:
@@ -25,6 +27,7 @@ on:
           - fold
           - control-compat
           - fold-compat
+          - fold-compat-hide-ads
         default: original
 
 permissions:
@@ -91,14 +94,14 @@ jobs:
           waydroid --version
 
       - name: Restore the verified compatibility APK build
-        if: endsWith(env.TEST_VARIANT, '-compat')
+        if: contains(env.TEST_VARIANT, '-compat')
         id: apk-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             output_apks/phone-test.apk
             rednote-report
-          key: rednote-9481803-${{ env.TEST_VARIANT }}-sdk35-apkeditor149-${{ hashFiles('build_rednote.py', 'rednote_signature_compat.py', 'ks_pkcs12.keystore') }}
+          key: rednote-9481803-${{ env.TEST_VARIANT }}-sdk35-apkeditor149-${{ hashFiles('build_rednote.py', 'rednote_signature_compat.py', 'rednote_ad_patch.py', 'rednote_ad_display_helper.py', 'ks_pkcs12.keystore') }}
 
       - name: Fetch pinned source and build the selected clone before Android startup
         shell: bash
@@ -109,9 +112,12 @@ jobs:
         run: |
           set -euo pipefail
           case "$TEST_VARIANT" in
-            original|resigned|control|fold|control-compat|fold-compat) ;;
+            original|resigned|control|fold|control-compat|fold-compat|fold-compat-hide-ads) ;;
             *) echo "Unsupported test variant: $TEST_VARIANT"; exit 2 ;;
           esac
+          if [ "$TEST_VARIANT" = fold-compat-hide-ads ]; then
+            python3 -m unittest test_build_rednote test_rednote_signature_compat test_rednote_ad_patch
+          fi
           mkdir -p rednote-input/original bins output_apks rednote-report
           if [ "$APK_CACHE_HIT" = true ]; then
             python3 - <<'PYCACHE'
@@ -124,6 +130,7 @@ jobs:
           assert report['output']['packageName'] == 'com.kirikira.rednote.fold'
           assert report['signatureCompatibility']['enabled'] is True
           assert report['foldLayout']['enabled'] is variant.startswith('fold')
+          assert report.get('feedAdDisplay', {}).get('enabled', False) is (variant == 'fold-compat-hide-ads')
           print('Reusing verified APK SHA-256:', report['output']['sha256'])
           PYCACHE
             apksigner verify output_apks/phone-test.apk
@@ -190,7 +197,7 @@ jobs:
             mv "$RUNNER_TEMP/build-tools-extract/android-15" "$RUNNER_TEMP/android-sdk/build-tools/35.0.0"
             grep -qx 'Pkg.Revision=35.0.0' "$RUNNER_TEMP/android-sdk/build-tools/35.0.0/source.properties"
             export ANDROID_HOME="$RUNNER_TEMP/android-sdk"
-            if [[ "$TEST_VARIANT" == *-compat ]]; then
+            if [[ "$TEST_VARIANT" == *-compat* ]]; then
               curl --fail --location --retry 2 --connect-timeout 20 --max-time 240 --speed-time 30 --speed-limit 1024 \
                 'https://dl.google.com/android/repository/platform-35_r02.zip' \
                 --output "$RUNNER_TEMP/platform-35_r02.zip"
@@ -266,15 +273,28 @@ jobs:
             echo 'a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67  bins/apkeditor.jar' | sha256sum --check
             options=()
             if [[ "$TEST_VARIANT" == fold* ]]; then options+=(--fold-layout); fi
-            if [[ "$TEST_VARIANT" == *-compat ]]; then options+=(--signature-compat); fi
-            options+=(--decode-dex classes17.dex)
-            if [[ "$TEST_VARIANT" == fold* ]]; then options+=(--decode-dex classes4.dex); fi
+            if [[ "$TEST_VARIANT" == *-compat* ]]; then options+=(--signature-compat); fi
+            if [[ "$TEST_VARIANT" == fold-compat-hide-ads ]]; then
+              options+=(--hide-feed-ads)
+              options+=(--decode-dex classes17.dex --decode-dex classes4.dex --decode-dex classes19.dex)
+            else
+              options+=(--decode-dex classes17.dex)
+              if [[ "$TEST_VARIANT" == fold* ]]; then options+=(--decode-dex classes4.dex); fi
+            fi
             python3 build_rednote.py \
               --input rednote-input/rednote.xapk \
               --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0 \
               --source 'https://apkpure.net/rednote-app/com.xingin.xhs/download' \
               --application-id com.kirikira.rednote.fold \
               --output output_apks/phone-test.apk --report "rednote-report/$TEST_VARIANT-build.json" "${options[@]}"
+            python3 - "$TEST_VARIANT" <<'PYREPORT'
+          import json, pathlib, sys
+          variant = sys.argv[1]
+          report = json.loads(pathlib.Path('rednote-report', variant + '-build.json').read_text())
+          enabled = report.get('feedAdDisplay', {}).get('enabled', False)
+          expected = variant == 'fold-compat-hide-ads'
+          assert enabled is expected, f'feedAdDisplay.enabled={enabled!r}; expected {expected!r}'
+          PYREPORT
             echo 'TEST_PACKAGE=com.kirikira.rednote.fold' >> "$GITHUB_ENV"
           fi
 
@@ -476,6 +496,19 @@ jobs:
           adb -s "$test_serial" push tools/rednote-network-probe.jar /data/local/tmp/rednote-network-probe.jar
           timeout 90 adb -s "$test_serial" shell env CLASSPATH=/data/local/tmp/rednote-network-probe.jar app_process /system/bin RednoteNetworkProbe
 
+      - name: Verify the feed-ad display helper in the built APK
+        if: env.TEST_VARIANT == 'fold-compat-hide-ads'
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb -s "$TEST_SERIAL" push tools/rednote-ad-display-smoke.jar /data/local/tmp/rednote-ad-display-smoke.jar
+          adb -s "$TEST_SERIAL" push output_apks/phone-test.apk /data/local/tmp/rednote-smoke.apk
+          adb -s "$TEST_SERIAL" shell chmod 444 /data/local/tmp/rednote-smoke.apk
+          adb -s "$TEST_SERIAL" shell mkdir -p /data/local/tmp/rednote-ad-smoke-dex
+          timeout 90 adb -s "$TEST_SERIAL" shell env \
+            CLASSPATH=/data/local/tmp/rednote-ad-display-smoke.jar \
+            app_process /system/bin dev.kiri.xhsads.smoke.RednoteAdDisplaySmoke /data/local/tmp/rednote-smoke.apk | tee feed-ad-display-smoke.json
+
       - name: Install the selected original or rebuilt APK
         shell: bash
         run: |
@@ -499,7 +532,19 @@ jobs:
           sys.path.insert(0, 'tools')
           from rednote_private_input import api
           rid = os.environ['GITHUB_RUN_ID']
+          variant = os.environ['TEST_VARIANT']
           preview = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'rednote-preview.json').read_text())
+          build_report_path = pathlib.Path('rednote-report', variant + '-build.json')
+          build_report = json.loads(build_report_path.read_text()) if build_report_path.is_file() else {}
+          feed_ad_display_enabled = bool(build_report.get('feedAdDisplay', {}).get('enabled', False))
+          expected_feed_ad_display_enabled = variant == 'fold-compat-hide-ads'
+          assert feed_ad_display_enabled is expected_feed_ad_display_enabled, (
+              f'feedAdDisplay.enabled={feed_ad_display_enabled!r}; '
+              f'expected {expected_feed_ad_display_enabled!r} for {variant}'
+          )
+          preview['feed_ad_display_enabled'] = feed_ad_display_enabled
+          preview_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'rednote-preview.json')
+          preview_path.write_text(json.dumps(preview, ensure_ascii=False))
           ready = preview.get('phone_form_visible') is True and preview.get('country_confirmed') is True and bool(preview.get('app_pid')) and preview.get('result_category') in ('phone_login_form', 'phone_country_code_visible')
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write(f"PREVIEW_READY={'true' if ready else 'false'}\n")
@@ -539,7 +584,7 @@ jobs:
             --report-file phone-result.json
           rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.phone.json"
 
-      - name: Publish the phone result and determine whether a user code is needed
+      - name: Publish the phone result without requesting an OTP
         if: env.PREVIEW_READY == 'true'
         shell: bash
         env:
@@ -550,39 +595,15 @@ jobs:
           sys.path.insert(0, 'tools')
           from rednote_private_input import api
           report = json.loads(pathlib.Path('phone-result.json').read_text())
-          need_otp = report['result_category'] == 'otp_screen' and report['steps']['get_code_clicked']
-          report['stage'] = 'waiting_otp' if need_otp else 'phone_finished'
+          report['stage'] = 'phone_finished'
           report['test_variant'] = os.environ['TEST_VARIANT']
           pathlib.Path('phone-result.json').write_text(json.dumps(report, ensure_ascii=False))
-          with open(os.environ['GITHUB_ENV'], 'a') as env:
-              env.write(f"NEED_OTP={'true' if need_otp else 'false'}\n")
           api('PUT', f"runtime-control/rednote-{os.environ['GITHUB_RUN_ID']}.result.json", {
               'message': 'Record the limited phone-test result',
               'branch': os.environ['GITHUB_REF_NAME'],
               'content': base64.b64encode(pathlib.Path('phone-result.json').read_bytes()).decode('ascii')
           })
           PYCODE
-
-      - name: Receive a user-supplied code for the same session
-        if: env.NEED_OTP == 'true'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python3 tools/rednote_private_input.py generate --kind otp
-          python3 tools/rednote_private_input.py wait --kind otp --timeout 600
-
-      - name: Verify the user-supplied code once
-        if: env.NEED_OTP == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 tools/rednote_otp_test.py \
-            --serial "$TEST_SERIAL" --package "$TEST_PACKAGE" \
-            --payload-file "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.otp.json" \
-            --report-file otp-result.json
-          rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.otp.json"
 
       - name: Publish the limited result and clean up
         if: always()
@@ -604,7 +625,6 @@ jobs:
           cleanup() {
             rm -f "$RUNNER_TEMP/waydroid-host-adbkey" "$RUNNER_TEMP/waydroid-host-adbkey.pub"
             rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.key.pem" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.state.json" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.phone.json"
-            rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.key.pem" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.state.json" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.otp.json"
             stop_waydroid_runtime
           }
           trap cleanup EXIT
@@ -615,12 +635,7 @@ jobs:
           report = pathlib.Path('phone-result.json')
           if report.is_file():
               data = json.loads(report.read_text())
-              otp = pathlib.Path('otp-result.json')
-              if otp.is_file():
-                  data['otp'] = json.loads(otp.read_text())
-                  data['stage'] = 'complete'
-              elif os.environ.get('NEED_OTP') == 'true':
-                  data['stage'] = 'otp_not_completed'
+              data['stage'] = 'complete'
               path = f"runtime-control/rednote-{os.environ['GITHUB_RUN_ID']}.result.json"
               old = api('GET', path)
               body = {
@@ -632,9 +647,8 @@ jobs:
                   body['sha'] = old['sha']
               api('PUT', path, body)
               print(json.dumps(data, ensure_ascii=False))
-          for infix, suffixes in (('', ('key.pem', 'state.json', 'phone.json')), ('-otp', ('key.pem', 'state.json', 'otp.json'))):
-              for suffix in suffixes:
-                  pathlib.Path(os.environ['RUNNER_TEMP'], f"rednote-{os.environ['GITHUB_RUN_ID']}{infix}.{suffix}").unlink(missing_ok=True)
+          for suffix in ('key.pem', 'state.json', 'phone.json'):
+              pathlib.Path(os.environ['RUNNER_TEMP'], f"rednote-{os.environ['GITHUB_RUN_ID']}.{suffix}").unlink(missing_ok=True)
           PYCODE
           if [ ! -f phone-phase-started ]; then
             tail -n 80 "$RUNNER_TEMP/waydroid-session-supervisor.log" 2>/dev/null || true
@@ -649,3 +663,26 @@ jobs:
             sudo lxc-info -P /var/lib/waydroid/lxc -n waydroid 2>/dev/null || true
           fi
           stop_waydroid_runtime
+
+      - name: Prepare the experimental ad-display APK artifact
+        if: always() && env.TEST_VARIANT == 'fold-compat-hide-ads'
+        id: ad-artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s output_apks/phone-test.apk ]; then exit 0; fi
+          mkdir -p rednote-ad-test-artifacts
+          cp output_apks/phone-test.apk rednote-ad-test-artifacts/rednote-fold-hide-ads.apk
+          cp rednote-report/fold-compat-hide-ads-build.json rednote-ad-test-artifacts/build-report.json
+          if [ -s feed-ad-display-smoke.json ]; then cp feed-ad-display-smoke.json rednote-ad-test-artifacts/; fi
+          (cd rednote-ad-test-artifacts && sha256sum *.apk *.json > SHA256SUMS)
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Upload the experimental ad-display APK
+        if: always() && steps.ad-artifact.outputs.ready == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: rednote-fold-hide-ads
+          path: rednote-ad-test-artifacts/*
+          retention-days: 1
+          if-no-files-found: error
