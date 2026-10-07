@@ -36,6 +36,8 @@ jobs:
           sudo chmod a+rw /dev/kvm
           ls -l /dev/kvm
           df -h .
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libpulse0
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "emulator" "platform-tools" "build-tools;35.0.0" \
             "platforms;android-35" "system-images;android-35;google_apis;x86_64"
