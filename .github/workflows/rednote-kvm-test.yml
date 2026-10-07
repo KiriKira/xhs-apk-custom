@@ -44,6 +44,37 @@ jobs:
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
           "$ANDROID_HOME/emulator/emulator" -accel-check
 
+      - name: Start Android 15 with hardware acceleration
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          emulator -version
+          printf 'no\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            --force --name rednote-ci --package 'system-images;android-35;google_apis;x86_64' \
+            --device pixel_6
+          cat "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/source.properties"
+          nohup emulator -avd rednote-ci -accel on -cores 2 -memory 3072 \
+            -gpu swiftshader -no-window -no-audio -no-boot-anim -no-snapshot \
+            -port 5554 -verbose > emulator-boot.log 2>&1 &
+          echo "$!" > emulator.pid
+          for attempt in $(seq 1 90); do
+            if ! kill -0 "$(cat emulator.pid)" 2>/dev/null; then
+              tail -n 100 emulator-boot.log
+              exit 1
+            fi
+            ready="$(timeout 10 adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r' || true)"
+            if [ "$ready" = 1 ]; then
+              adb -s emulator-5554 shell service check package
+              adb -s emulator-5554 shell service check activity
+              exit 0
+            fi
+            sleep 5
+          done
+          tail -n 80 emulator-boot.log
+          exit 1
+
       - name: Fetch and verify the exact REDnote input and APKEditor
         shell: bash
         run: |
@@ -87,31 +118,6 @@ jobs:
             --source 'https://apkpure.net/rednote-app/com.xingin.xhs/download' \
             --fold-layout --output output_apks/rednote-fold.apk
 
-      - name: Start Android 15 with hardware acceleration
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf 'no\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
-            --force --name rednote-ci --package 'system-images;android-35;google_apis;x86_64' \
-            --device pixel_6
-          cat "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/source.properties"
-          nohup emulator -avd rednote-ci -accel on -cores 2 -memory 2048 \
-            -gpu swiftshader -no-window -no-audio -no-boot-anim -no-snapshot \
-            -port 5554 > emulator-boot.log 2>&1 &
-          echo "$!" > emulator.pid
-          timeout 180 adb -s emulator-5554 wait-for-device
-          for attempt in $(seq 1 60); do
-            ready="$(timeout 10 adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r' || true)"
-            if [ "$ready" = 1 ]; then
-              adb -s emulator-5554 shell service check package
-              adb -s emulator-5554 shell service check activity
-              exit 0
-            fi
-            sleep 5
-          done
-          tail -n 80 emulator-boot.log
-          exit 1
-
       - name: Install and launch three variants without account information
         shell: bash
         run: |
@@ -133,7 +139,10 @@ jobs:
                   continue
               if path.suffix in ('.json', '.xml', '.png'):
                   print('REDNOTE_EVIDENCE_BEGIN ' + path.as_posix())
-                  print(base64.b64encode(path.read_bytes()).decode('ascii'))
+                  encoded = base64.b64encode(path.read_bytes()).decode('ascii')
+                  for start in range(0, len(encoded), 120):
+                      print(encoded[start:start + 120])
                   print('REDNOTE_EVIDENCE_END')
           PY
+          if [ -f emulator-boot.log ]; then tail -n 100 emulator-boot.log; fi
           if [ -f emulator.pid ]; then kill "$(cat emulator.pid)" || true; fi
