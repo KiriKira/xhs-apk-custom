@@ -246,7 +246,7 @@ jobs:
               sleep 1
             done
             test -S "$XDG_RUNTIME_DIR/pulse/native"
-            weston --no-config --backend=headless --renderer=pixman --socket="$WAYLAND_DISPLAY" --log="$RUNNER_TEMP/weston.log" &
+            weston --no-config --backend=headless --renderer=pixman --width=1080 --height=1920 --socket="$WAYLAND_DISPLAY" --log="$RUNNER_TEMP/weston.log" &
             weston_pid=$!
             for attempt in $(seq 1 60); do
               if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then break; fi
@@ -389,11 +389,19 @@ jobs:
           adb -s "$test_serial" shell service check package
           adb -s "$test_serial" shell service check activity
           # Prepare the fresh test desktop before opening any app/account flow.
+          adb -s "$test_serial" shell wm size 1080x1920
+          adb -s "$test_serial" shell wm density 420
           adb -s "$test_serial" shell settings put system screen_off_timeout 1800000
           adb -s "$test_serial" shell input keyevent KEYCODE_WAKEUP
           adb -s "$test_serial" shell wm dismiss-keyguard
           adb -s "$test_serial" shell input keyevent KEYCODE_HOME
           adb -s "$test_serial" shell cmd statusbar collapse
+          # Permit this VM's normal forwarding through the Docker host firewall.
+          sudo iptables -I FORWARD 1 -i waydroid0 -j ACCEPT
+          sudo iptables -I FORWARD 1 -o waydroid0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+          adb -s "$test_serial" shell ip route
+          adb -s "$test_serial" push tools/rednote-network-probe.jar /data/local/tmp/rednote-network-probe.jar
+          timeout 90 adb -s "$test_serial" shell env CLASSPATH=/data/local/tmp/rednote-network-probe.jar app_process /system/bin RednoteNetworkProbe
 
       - name: Install the selected original or rebuilt APK
         shell: bash
