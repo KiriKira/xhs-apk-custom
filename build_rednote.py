@@ -793,6 +793,74 @@ def patch_boolean_method(path: Path, method_name: str, value: bool = True) -> No
     path.write_text(updated, encoding="utf-8", newline="\n")
 
 
+def patch_main_process_package_gate(
+    path: Path, old_package: str, new_package: str
+) -> dict[str, str]:
+    """Rebase the app's one hard-coded main-process name comparison.
+
+    Rednote 9.48.1 stores its current process name in ``ddc/b.b`` and compares
+    that value to the source package in ``ddc/a.invoke()``. After a package
+    clone, Android names the default process after the new package, so the app
+    otherwise takes its subprocess initialization path in the main process.
+    Keep this scoped to that exact predicate; other source-package literals
+    may be external protocol names or SDK configuration and are left alone.
+    """
+    if old_package == new_package:
+        raise BuildError("Main-process package gate does not need rebasing")
+
+    text = path.read_text(encoding="utf-8")
+    if not re.search(r"(?m)^\.class[^\n]*\sLddc/a;\s*$", text):
+        raise BuildError(f"Expected ddc/a class in {path}")
+
+    method_re = re.compile(
+        r"(?ms)^(\.method[^\n]*\binvoke\(\)Ljava/lang/Object;[^\n]*\n)"
+        r"(.*?)"
+        r"(^\.end method\s*$)"
+    )
+    matches = list(method_re.finditer(text))
+    if len(matches) != 1:
+        raise BuildError(
+            f"Expected one ddc/a.invoke()Ljava/lang/Object; method in {path}; found {len(matches)}"
+        )
+
+    match = matches[0]
+    body = match.group(2)
+    old_literal = re.escape(old_package)
+    predicate = re.compile(
+        rf"(?ms)sget-object\s+(?P<process_register>[vp]\d+),\s*"
+        rf"Lddc/b;->b:Ljava/lang/String;.*?"
+        rf"const-string\s+(?P<package_register>[vp]\d+),\s*\"{old_literal}\".*?"
+        rf"invoke-static\s*\{{\s*(?P=process_register)\s*,\s*"
+        rf"(?P=package_register)\s*\}},\s*"
+        r"Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z"
+    )
+    predicate_matches = list(predicate.finditer(body))
+    if len(predicate_matches) != 1:
+        raise BuildError(
+            "Expected exactly one source-package main-process comparison in "
+            f"ddc/a.invoke(); found {len(predicate_matches)}"
+        )
+
+    literal_re = re.compile(rf'(?m)^(\s*const-string\s+[vp]\d+,\s*)"{old_literal}"(\s*)$')
+    updated_body, replacement_count = literal_re.subn(
+        lambda found: found.group(1) + '"' + new_package + '"' + found.group(2),
+        body,
+    )
+    if replacement_count != 1:
+        raise BuildError(
+            f"Expected one {old_package!r} literal in ddc/a.invoke(); found {replacement_count}"
+        )
+
+    updated = text[: match.start(2)] + updated_body + text[match.end(2) :]
+    path.write_text(updated, encoding="utf-8", newline="\n")
+    return {
+        "class": "ddc.a",
+        "method": "invoke()Ljava/lang/Object;",
+        "sourceProcessName": old_package,
+        "cloneProcessName": new_package,
+    }
+
+
 def dex_entry_names(apk: Path) -> set[str]:
     with zipfile.ZipFile(apk) as archive:
         return {
@@ -1184,10 +1252,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             "xml",
             "-f",
         ]
-        if args.fold_layout:
-            decode_args.extend(["-load-dex", "1", "-dex-lib", "jf"])
-        else:
-            decode_args.append("-dex")
+        decode_args.extend(["-load-dex", "1", "-dex-lib", "jf"])
         decode_args.extend(["-i", merge_input, "-o", decoded_dir])
         run_command(decode_args, timeout=3600)
         manifest_path, manifest_tree, manifest_root = find_decoded_manifest(decoded_dir)
@@ -1203,13 +1268,23 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         manifest_tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
 
         touched_dex_names: set[str] = set()
+        process_gate_path = find_smali_class(decoded_dir, "ddc.a")
+        process_gate_audit = patch_main_process_package_gate(
+            process_gate_path, old_package, application_id
+        )
+        process_gate_dex = dex_name_for_smali(decoded_dir, process_gate_path)
+        touched_dex_names.add(process_gate_dex)
+
+        fold_touched_dex_names: set[str] = set()
         if args.fold_layout:
             device_info = find_smali_class(
                 decoded_dir, "com.xingin.adaptation.device.DeviceInfoContainer"
             )
             for method_name in ("isHorizontalFolderDevice", "isPad"):
                 patch_boolean_method(device_info, method_name, True)
-            touched_dex_names.add(dex_name_for_smali(decoded_dir, device_info))
+            device_dex = dex_name_for_smali(decoded_dir, device_info)
+            touched_dex_names.add(device_dex)
+            fold_touched_dex_names.add(device_dex)
             warnings.append(
                 "--fold-layout changed DeviceInfoContainer.isHorizontalFolderDevice() and isPad() to return true."
             )
@@ -1224,8 +1299,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             "-f",
             "-no-cache",
         ]
-        if args.fold_layout:
-            build_args.extend(["-dex-lib", "jf"])
+        build_args.extend(["-dex-lib", "jf"])
         build_args.extend(["-i", decoded_dir, "-o", rebuilt])
         run_command(build_args, timeout=3600)
 
@@ -1234,17 +1308,15 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             if "AndroidManifest.xml" not in baseline_names:
                 raise BuildError("Baseline APK has no AndroidManifest.xml")
             changed_entries = {"AndroidManifest.xml"}
-            if args.fold_layout:
-                missing_dex = touched_dex_names - baseline_names
-                if missing_dex:
-                    raise BuildError(f"Fold-layout DEX not present in merged input: {sorted(missing_dex)}")
-                for dex_name in sorted(touched_dex_names):
-                    if dex_name not in rebuilt_zip.namelist():
-                        raise BuildError(f"APKEditor did not rebuild touched DEX {dex_name}")
-                    if sha256_bytes(baseline.read(dex_name)) != sha256_bytes(rebuilt_zip.read(dex_name)):
-                        changed_entries.add(dex_name)
-                if changed_entries == {"AndroidManifest.xml"}:
-                    raise BuildError("Fold-layout methods did not produce a changed DEX entry")
+            missing_dex = touched_dex_names - baseline_names
+            if missing_dex:
+                raise BuildError(f"Touched DEX not present in merged input: {sorted(missing_dex)}")
+            for dex_name in sorted(touched_dex_names):
+                if dex_name not in rebuilt_zip.namelist():
+                    raise BuildError(f"APKEditor did not rebuild touched DEX {dex_name}")
+                if sha256_bytes(baseline.read(dex_name)) == sha256_bytes(rebuilt_zip.read(dex_name)):
+                    raise BuildError(f"Compatibility patch did not change DEX entry {dex_name}")
+                changed_entries.add(dex_name)
 
         candidate = temporary_root / "rednote-unsigned.apk"
         signature_cleanup = make_minimal_candidate(
@@ -1319,11 +1391,19 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             "foldLayout": {
                 "enabled": bool(args.fold_layout),
                 "methods": ["isHorizontalFolderDevice", "isPad"] if args.fold_layout else [],
-                "touchedDexEntries": sorted(changed_entries - {"AndroidManifest.xml"}),
+                "touchedDexEntries": sorted(fold_touched_dex_names),
+            },
+            "mainProcessCompatibility": {
+                **process_gate_audit,
+                "touchedDexEntry": process_gate_dex,
+                "reason": (
+                    "The app's main-process predicate compares the process name to its source package. "
+                    "The clone's default process name follows the new applicationId."
+                ),
             },
             "buildConfiguration": {
-                "dexProcessingLibrary": "jf" if args.fold_layout else "raw-copy (--dex)",
-                "decodeLoadDex": 1 if args.fold_layout else None,
+                "dexProcessingLibrary": "jf",
+                "decodeLoadDex": 1,
                 "decodeHeapLimitGiB": 4,
                 "buildHeapLimitGiB": 4,
                 "zipalignPageSizeKiB": 16,

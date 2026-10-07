@@ -8,6 +8,7 @@ from build_rednote import (
     BuildError,
     dex_name_for_smali,
     is_signature_metadata,
+    patch_main_process_package_gate,
     reject_split_manifest,
     transform_manifest,
 )
@@ -217,6 +218,64 @@ class ManifestTransformTests(unittest.TestCase):
         self.assertTrue(is_signature_metadata("stamp-cert-sha256"))
         self.assertFalse(is_signature_metadata("META-INF/versions/9/OSGI-INF/MANIFEST.MF"))
         self.assertFalse(is_signature_metadata("META-INF/services/com.example.Factory"))
+
+
+class MainProcessPackageGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = Path(__import__("tempfile").mkdtemp(prefix="rednote-smali-test-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.temp_dir, ignore_errors=True))
+        self.smali_path = self.temp_dir / "smali" / "classes17" / "ddc" / "a.smali"
+        self.smali_path.parent.mkdir(parents=True)
+        self.smali_path.write_text(
+            '''.class public final synthetic Lddc/a;
+.super Ljava/lang/Object;
+
+.method public final invoke()Ljava/lang/Object;
+    .locals 2
+    sget-object v0, Lddc/b;->b:Ljava/lang/String;
+    const-string v1, "com.xingin.xhs"
+    invoke-static {v0, v1}, Lkotlin/jvm/internal/Intrinsics;->areEqual(Ljava/lang/Object;Ljava/lang/Object;)Z
+    move-result v0
+    return-object v0
+.end method
+
+.method public unrelated()V
+    .locals 1
+    const-string v0, "com.xingin.xhs"
+    return-void
+.end method
+''',
+            encoding="utf-8",
+        )
+
+    def test_rebases_only_the_unique_main_process_predicate(self):
+        audit = patch_main_process_package_gate(
+            self.smali_path, OLD_PACKAGE, NEW_PACKAGE
+        )
+        text = self.smali_path.read_text(encoding="utf-8")
+        self.assertIn(f'const-string v1, "{NEW_PACKAGE}"', text)
+        self.assertIn('const-string v0, "com.xingin.xhs"', text)
+        self.assertEqual(
+            audit,
+            {
+                "class": "ddc.a",
+                "method": "invoke()Ljava/lang/Object;",
+                "sourceProcessName": OLD_PACKAGE,
+                "cloneProcessName": NEW_PACKAGE,
+            },
+        )
+
+    def test_rejects_a_duplicated_main_process_predicate(self):
+        text = self.smali_path.read_text(encoding="utf-8")
+        method_body = '''
+    sget-object v0, Lddc/b;->b:Ljava/lang/String;
+    const-string v1, "com.xingin.xhs"
+    invoke-static {v0, v1}, Lkotlin/jvm/internal/Intrinsics;->areEqual(Ljava/lang/Object;Ljava/lang/Object;)Z
+'''
+        text = text.replace(".end method", method_body + ".end method", 1)
+        self.smali_path.write_text(text, encoding="utf-8")
+        with self.assertRaises(BuildError):
+            patch_main_process_package_gate(self.smali_path, OLD_PACKAGE, NEW_PACKAGE)
 
 
 if __name__ == "__main__":
