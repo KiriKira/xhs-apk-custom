@@ -1,0 +1,168 @@
+name: REDnote Waydroid binder capability probe
+
+on:
+  push:
+    branches: ["codex/rednote-kvm-test"]
+    paths:
+      - ".github/workflows/rednote-waydroid-probe.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: rednote-waydroid-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  binder-probe:
+    name: Binder prerequisites (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    continue-on-error: ${{ matrix.runner == 'ubuntu-24.04-arm' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+    steps:
+      - name: Read kernel and container prerequisites
+        shell: bash
+        env:
+          RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          set -u
+
+          printf 'runner_label=%s\n' "$RUNNER_LABEL"
+          printf 'runner_os=%s\n' "${RUNNER_OS:-unknown}"
+          printf 'runner_arch=%s\n' "${RUNNER_ARCH:-unknown}"
+          printf 'kernel=%s\n' "$(uname -srm)"
+          if [ -r /etc/os-release ]; then
+            grep -E '^(ID|VERSION_ID|PRETTY_NAME)=' /etc/os-release || true
+          fi
+
+          virt_type=unavailable
+          if command -v systemd-detect-virt >/dev/null 2>&1; then
+            virt_type="$(systemd-detect-virt --vm 2>/dev/null || true)"
+            [ -n "$virt_type" ] || virt_type=none-or-unreported
+          fi
+          printf 'virtualization_type=%s\n' "$virt_type"
+
+          if [ -c /dev/kvm ]; then
+            printf 'dev_kvm=present\n'
+            if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+              printf 'dev_kvm_access=read-write\n'
+            else
+              printf 'dev_kvm_access=restricted\n'
+            fi
+          else
+            printf 'dev_kvm=absent\n'
+          fi
+
+          awk '
+            /^(flags|Features)[[:space:]]*:/ {
+              records++
+              has_vmx = 0
+              has_svm = 0
+              for (i = 1; i <= NF; i++) {
+                if ($i == "vmx") has_vmx = 1
+                if ($i == "svm") has_svm = 1
+              }
+              vmx += has_vmx
+              svm += has_svm
+            }
+            END {
+              printf "cpu_flag_records=%d vmx_processor_count=%d svm_processor_count=%d\n", records, vmx, svm
+            }
+          ' /proc/cpuinfo
+
+          config_file="/boot/config-$(uname -r)"
+          binder_config_pattern='^CONFIG_ANDROID_BINDER_(IPC|DEVICES)=|^CONFIG_ANDROID_BINDERFS=|^# CONFIG_ANDROID_BINDER_(IPC|DEVICES) is not set|^# CONFIG_ANDROID_BINDERFS is not set'
+          if [ -r "$config_file" ]; then
+            printf 'kernel_config_source=boot-config\n'
+            grep -E "$binder_config_pattern" "$config_file" || printf 'binder_config_entries=not-found\n'
+          elif [ -r /proc/config.gz ]; then
+            printf 'kernel_config_source=proc-config-gz\n'
+            gzip -cd /proc/config.gz | grep -E "$binder_config_pattern" || printf 'binder_config_entries=not-found\n'
+          else
+            printf 'kernel_config_source=unavailable\n'
+          fi
+
+          module_root="/lib/modules/$(uname -r)"
+          if [ -d "$module_root" ]; then
+            module_count="$(find "$module_root" -type f \( -name 'binder_linux.ko' -o -name 'binder_linux.ko.*' \) -print 2>/dev/null | wc -l | tr -d ' ')"
+            printf 'binder_module_file_count=%s\n' "$module_count"
+          else
+            printf 'binder_module_file_count=module-tree-unavailable\n'
+          fi
+          if [ -d /sys/module/binder_linux ]; then
+            printf 'binder_module_preloaded=yes\n'
+          else
+            printf 'binder_module_preloaded=no\n'
+          fi
+
+          if sudo -n modprobe binder_linux >/dev/null 2>&1; then
+            printf 'binder_modprobe=success\n'
+          else
+            modprobe_status=$?
+            printf 'binder_modprobe=failed exit=%s\n' "$modprobe_status"
+          fi
+          if [ -d /sys/module/binder_linux ]; then
+            printf 'binder_module_after_modprobe=present\n'
+          else
+            printf 'binder_module_after_modprobe=absent\n'
+          fi
+
+          if awk '$2 == "binder" { found = 1 } END { exit !found }' /proc/filesystems; then
+            printf 'binderfs_kernel_support=present\n'
+          else
+            printf 'binderfs_kernel_support=absent\n'
+          fi
+
+          for device in binder hwbinder vndbinder; do
+            if [ -c "/dev/$device" ]; then
+              printf 'dev_%s=present-char\n' "$device"
+            elif [ -e "/dev/$device" ]; then
+              printf 'dev_%s=present-nonchar\n' "$device"
+            else
+              printf 'dev_%s=absent\n' "$device"
+            fi
+          done
+
+          binderfs_dir="${RUNNER_TEMP}/binderfs"
+          mkdir -p "$binderfs_dir" 2>/dev/null || true
+          binderfs_mounted=0
+          cleanup_binderfs() {
+            if [ "$binderfs_mounted" -eq 1 ]; then
+              timeout 10s sudo -n umount "$binderfs_dir" >/dev/null 2>&1 || true
+            fi
+            rmdir "$binderfs_dir" 2>/dev/null || true
+          }
+          trap cleanup_binderfs EXIT
+          if [ -d "$binderfs_dir" ] && timeout 10s sudo -n mount -t binder binder "$binderfs_dir" >/dev/null 2>&1; then
+            binderfs_mounted=1
+            printf 'binderfs_mount=success\n'
+            if [ -c "$binderfs_dir/binder-control" ]; then
+              printf 'binderfs_control=present-char\n'
+            elif [ -e "$binderfs_dir/binder-control" ]; then
+              printf 'binderfs_control=present-nonchar\n'
+            else
+              printf 'binderfs_control=absent\n'
+            fi
+            if timeout 10s sudo -n umount "$binderfs_dir" >/dev/null 2>&1; then
+              binderfs_mounted=0
+              printf 'binderfs_unmount=success\n'
+            else
+              printf 'binderfs_unmount=failed\n'
+            fi
+          else
+            printf 'binderfs_mount=failed\n'
+          fi
+
+          for tool in lxc-start waydroid weston; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              printf 'command_%s=present\n' "$tool"
+            else
+              printf 'command_%s=absent\n' "$tool"
+            fi
+          done
