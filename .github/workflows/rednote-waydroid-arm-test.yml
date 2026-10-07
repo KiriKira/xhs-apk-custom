@@ -19,6 +19,7 @@ on:
         type: choice
         options:
           - original
+          - resigned
           - control
           - fold
         default: original
@@ -94,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$TEST_VARIANT" in
-            original|control|fold) ;;
+            original|resigned|control|fold) ;;
             *) echo "Unsupported test variant: $TEST_VARIANT"; exit 2 ;;
           esac
           mkdir -p rednote-input/original bins output_apks rednote-report
@@ -103,7 +104,7 @@ jobs:
             --output rednote-input/rednote.xapk
           echo 'bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0  rednote-input/rednote.xapk' | sha256sum --check
 
-          if [ "$TEST_VARIANT" = original ]; then
+          if [ "$TEST_VARIANT" = original ] || [ "$TEST_VARIANT" = resigned ]; then
             python3 - <<'PYCODE'
           import pathlib, zipfile
           target = pathlib.Path('rednote-input/original')
@@ -118,6 +119,32 @@ jobs:
               apksigner verify "$apk" >/dev/null
               echo "verified original split signature: $(basename "$apk")"
             done
+            if [ "$TEST_VARIANT" = resigned ]; then
+              mkdir -p rednote-input/resigned
+              for apk in rednote-input/original/*.apk; do
+                apksigner sign --ks ks_pkcs12.keystore --ks-key-alias jhc \
+                  --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD \
+                  --out "rednote-input/resigned/$(basename "$apk")" "$apk"
+                apksigner verify "rednote-input/resigned/$(basename "$apk")"
+              done
+              python3 - <<'PYAUDIT'
+          import hashlib, pathlib, zipfile
+          def payload(path):
+              with zipfile.ZipFile(path) as archive:
+                  return {n: hashlib.sha256(archive.read(n)).hexdigest()
+                          for n in archive.namelist() if not n.endswith('/')
+                          and n != 'stamp-cert-sha256'
+                          and not (n.upper().startswith('META-INF/')
+                                   and (n.upper().endswith(('.SF', '.RSA', '.DSA', '.EC'))
+                                        or n.upper() == 'META-INF/MANIFEST.MF'))}
+          for original in pathlib.Path('rednote-input/original').glob('*.apk'):
+              signed = pathlib.Path('rednote-input/resigned', original.name)
+              assert payload(original) == payload(signed), 'Re-sign-only changed an application payload'
+              print('re-sign-only payload identical:', original.name)
+          PYAUDIT
+              mv rednote-input/original rednote-input/official-signed
+              mv rednote-input/resigned rednote-input/original
+            fi
           else
             sudo apt-get install -y --no-install-recommends qemu-user
             command -v qemu-x86_64
@@ -407,7 +434,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$TEST_VARIANT" = original ]; then
+          if [ "$TEST_VARIANT" = original ] || [ "$TEST_VARIANT" = resigned ]; then
             adb -s "$TEST_SERIAL" install-multiple rednote-input/original/*.apk
           else
             adb -s "$TEST_SERIAL" install output_apks/phone-test.apk
