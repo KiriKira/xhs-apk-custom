@@ -420,6 +420,11 @@ def run(serial, package):
             report["observed_pids"] = list(dict.fromkeys(observed_pids + final_pids))
         ok, logs, log_timed = adb.run("logcat", "-d", "-v", "brief", "-t", "1000", timeout=10)
         log_summary = smoke.extract_crash_summary(logs.decode("utf-8", errors="replace") if ok else "", package)
+        helper_ok, helper_logs, helper_timed = adb.run(
+            "logcat", "-d", "-v", "brief", "-s", "RednoteSigSpoof", timeout=5)
+        helper_text = helper_logs.decode("utf-8", errors="replace") if helper_ok else ""
+        helper_events = re.findall(
+            r"PackageInfo signature compatibility helper (installed|failed)", helper_text)
         crash_ok, crash_logs, crash_timed = adb.run(
             "logcat", "-d", "-b", "crash", "-v", "brief", timeout=10
         )
@@ -436,6 +441,8 @@ def run(serial, package):
             exit_output.decode("utf-8", errors="replace") if exit_ok else "", package
         )
         report["runtime_diagnostics"] = {
+            "signature_compat_helper": helper_events[-1] if helper_events else "not_observed",
+            "signature_compat_log_timed_out": helper_timed,
             "pidof_timed_out": timed,
             "logcat_timed_out": log_timed,
             "crash_buffer_timed_out": crash_timed,

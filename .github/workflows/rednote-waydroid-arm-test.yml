@@ -10,6 +10,7 @@ on:
       - "tools/rednote_login_preview.py"
       - "tools/rednote_otp_test.py"
       - "build_rednote.py"
+      - "rednote_signature_compat.py"
       - "ks_pkcs12.keystore"
   workflow_dispatch:
     inputs:
@@ -22,6 +23,8 @@ on:
           - resigned
           - control
           - fold
+          - control-compat
+          - fold-compat
         default: original
 
 permissions:
@@ -34,7 +37,7 @@ concurrency:
 jobs:
   phone:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: ${{ (inputs.variant == 'control' || inputs.variant == 'fold') && 60 || 40 }}
+    timeout-minutes: ${{ (inputs.variant != 'original' && inputs.variant != 'resigned') && 60 || 40 }}
     permissions:
       contents: write
     env:
@@ -95,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$TEST_VARIANT" in
-            original|resigned|control|fold) ;;
+            original|resigned|control|fold|control-compat|fold-compat) ;;
             *) echo "Unsupported test variant: $TEST_VARIANT"; exit 2 ;;
           esac
           mkdir -p rednote-input/original bins output_apks rednote-report
@@ -159,6 +162,18 @@ jobs:
             mv "$RUNNER_TEMP/build-tools-extract/android-15" "$RUNNER_TEMP/android-sdk/build-tools/35.0.0"
             grep -qx 'Pkg.Revision=35.0.0' "$RUNNER_TEMP/android-sdk/build-tools/35.0.0/source.properties"
             export ANDROID_HOME="$RUNNER_TEMP/android-sdk"
+            if [[ "$TEST_VARIANT" == *-compat ]]; then
+              curl --fail --location --retry 2 --connect-timeout 20 --max-time 240 --speed-time 30 --speed-limit 1024 \
+                'https://dl.google.com/android/repository/platform-35_r02.zip' \
+                --output "$RUNNER_TEMP/platform-35_r02.zip"
+              echo '0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0  '"$RUNNER_TEMP"'/platform-35_r02.zip' | sha256sum --check
+              echo '0bb560a90a7a2cbd0dd8348224d518b638fe7949  '"$RUNNER_TEMP"'/platform-35_r02.zip' | sha1sum --check
+              mkdir -p "$ANDROID_HOME/platforms"
+              unzip -q "$RUNNER_TEMP/platform-35_r02.zip" -d "$ANDROID_HOME/platforms"
+              export ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
+              export D8="$ANDROID_HOME/build-tools/35.0.0/d8"
+              test -f "$ANDROID_JAR"
+            fi
 
             mkdir -p "$RUNNER_TEMP/amd64-lists/partial" "$RUNNER_TEMP/amd64-debs" "$RUNNER_TEMP/amd64-root"
             cat > "$RUNNER_TEMP/amd64.list" <<'APT'
@@ -222,7 +237,8 @@ jobs:
               --output bins/apkeditor.jar
             echo 'a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67  bins/apkeditor.jar' | sha256sum --check
             options=()
-            if [ "$TEST_VARIANT" = fold ]; then options+=(--fold-layout); fi
+            if [[ "$TEST_VARIANT" == fold* ]]; then options+=(--fold-layout); fi
+            if [[ "$TEST_VARIANT" == *-compat ]]; then options+=(--signature-compat); fi
             python3 build_rednote.py \
               --input rednote-input/rednote.xapk \
               --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0 \

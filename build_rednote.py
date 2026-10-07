@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Create a side-by-side Rednote APK from a locally supplied APK or XAPK.
 
-This entry point intentionally does not use signature spoofing, installer spoofing,
-or integrity-bypass helpers. For XAPK inputs it verifies every APK member before
-merging the selected split set with APKEditor.
+Signature compatibility is an explicit opt-in in-process experiment. The default
+build remains a renamed Rednote APK with payload-preservation auditing. For XAPK
+inputs every APK member is verified before merging the selected split set.
 """
 
 from __future__ import annotations
@@ -23,6 +23,13 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from rednote_signature_compat import (
+    build_signature_spoof_dex,
+    extract_signer_certificate,
+    next_dex_name,
+    patch_application_startup,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -752,6 +759,25 @@ def find_smali_class(decoded_dir: Path, class_name: str) -> Path:
     return matches[0]
 
 
+def resolve_manifest_application_class(root: ET.Element, source_package: str) -> str:
+    application = next(
+        (child for child in list(root) if _local_name(child.tag) == "application"), None
+    )
+    if application is None:
+        raise BuildError("Decoded manifest has no application element")
+    value = application.get(ANDROID + "name")
+    if not value:
+        raise BuildError(
+            "Signature compatibility requires an explicit android:name Application class"
+        )
+    value = value.strip()
+    if value.startswith("."):
+        return source_package + value
+    if "." not in value:
+        return source_package + "." + value
+    return value
+
+
 def dex_name_for_smali(decoded_dir: Path, smali_path: Path) -> str:
     relative = smali_path.relative_to(decoded_dir)
     root = relative.parts[0]
@@ -1053,11 +1079,17 @@ def make_minimal_candidate(
     rebuilt_apk: Path,
     changed_entries: set[str],
     candidate: Path,
+    added_entries: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
+    added_entries = added_entries or {}
     with zipfile.ZipFile(base_apk, "r") as base, zipfile.ZipFile(rebuilt_apk, "r") as rebuilt:
         base_names = [info.filename for info in base.infolist()]
         if len(base_names) != len(set(base_names)):
             raise BuildError("Input APK has duplicate ZIP entries; safe transplant is ambiguous")
+        base_name_set = set(base_names)
+        collisions = sorted(base_name_set & added_entries.keys())
+        if collisions:
+            raise BuildError(f"Added payload entries already exist in the baseline APK: {collisions}")
         rebuilt_names = set(rebuilt.namelist())
         missing = changed_entries - rebuilt_names
         if missing:
@@ -1077,22 +1109,41 @@ def make_minimal_candidate(
                 else:
                     data = base.read(info)
                 output.writestr(info, data)
+            for name, source_path in sorted(added_entries.items()):
+                if not re.fullmatch(r"classes(?:\d+)?\.dex", name):
+                    raise BuildError(f"Only DEX entries may be added to the APK payload: {name}")
+                added_info = zipfile.ZipInfo(name)
+                added_info.compress_type = zipfile.ZIP_STORED
+                output.writestr(added_info, source_path.read_bytes())
 
-    return {"removedSignatureMetadata": sorted(removed_signature_entries)}
+    return {
+        "removedSignatureMetadata": sorted(removed_signature_entries),
+        "addedPayloadEntries": sorted(added_entries),
+    }
 
 
 def compare_payload_entries(
-    baseline_apk: Path, output_apk: Path, changed_entries: set[str]
+    baseline_apk: Path,
+    output_apk: Path,
+    changed_entries: set[str],
+    added_entries: set[str] | None = None,
 ) -> dict[str, Any]:
+    added_entries = added_entries or set()
     with zipfile.ZipFile(baseline_apk, "r") as baseline, zipfile.ZipFile(output_apk, "r") as output:
         baseline_names = {info.filename for info in baseline.infolist() if not is_signature_metadata(info.filename)}
         output_names = {info.filename for info in output.infolist() if not is_signature_metadata(info.filename)}
-        if baseline_names != output_names:
+        if baseline_names & added_entries:
+            raise BuildError(f"Added payload entries already exist in the baseline APK: {sorted(baseline_names & added_entries)}")
+        expected_output_names = baseline_names | added_entries
+        if expected_output_names != output_names:
             missing = sorted(baseline_names - output_names)
-            added = sorted(output_names - baseline_names)
+            added = sorted(output_names - expected_output_names)
             raise BuildError(
                 f"Payload entry set changed unexpectedly; missing={missing[:20]}, added={added[:20]}"
             )
+        missing_added = sorted(added_entries - output_names)
+        if missing_added:
+            raise BuildError(f"Expected added payload entries are missing: {missing_added}")
         mismatches = []
         unchanged_count = 0
         changed_records = []
@@ -1111,9 +1162,14 @@ def compare_payload_entries(
             raise BuildError(
                 "Unexpected payload changes outside manifest/touched DEX: " + ", ".join(mismatches[:30])
             )
+        added_records = [
+            {"entry": name, "sha256": sha256_bytes(output.read(name))}
+            for name in sorted(added_entries)
+        ]
     return {
         "unchangedPayloadEntryCount": unchanged_count,
         "changedPayloadEntries": changed_records,
+        "addedPayloadEntries": added_records,
         "allOtherPayloadHashesMatch": True,
     }
 
@@ -1137,6 +1193,7 @@ def sign_candidate(
     alias: str,
     zipalign: Path,
     apksigner: Path,
+    v1_signer_name: str | None = None,
 ) -> dict[str, Any]:
     if not keystore.is_file():
         raise BuildError(f"Signing keystore not found: {keystore}")
@@ -1150,24 +1207,22 @@ def sign_candidate(
     # Align uncompressed native libraries for Android devices requiring 16 KiB
     # memory pages; the legacy -p option only guarantees 4 KiB alignment.
     run_command([zipalign, "-P", "16", "-f", "4", candidate, aligned])
-    run_command(
-        [
-            apksigner,
-            "sign",
-            "--ks",
-            keystore,
-            "--ks-pass",
-            "env:REDNOTE_BUILD_STORE_PASSWORD",
-            "--ks-key-alias",
-            alias,
-            "--key-pass",
-            "env:REDNOTE_BUILD_KEY_PASSWORD",
-            "--out",
-            output,
-            aligned,
-        ],
-        env=signing_env,
-    )
+    sign_args: list[str | Path] = [
+        apksigner,
+        "sign",
+        "--ks",
+        keystore,
+        "--ks-pass",
+        "env:REDNOTE_BUILD_STORE_PASSWORD",
+        "--ks-key-alias",
+        alias,
+        "--key-pass",
+        "env:REDNOTE_BUILD_KEY_PASSWORD",
+    ]
+    if v1_signer_name:
+        sign_args.extend(["--v1-signing-enabled", "true", "--v1-signer-name", v1_signer_name])
+    sign_args.extend(["--out", output, aligned])
+    run_command(sign_args, env=signing_env)
     aligned.unlink(missing_ok=True)
     verify = verify_apk_signature(output, apksigner)
     run_command([zipalign, "-c", "-P", "16", "-v", "4", output])
@@ -1202,6 +1257,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--application-id", default=DEFAULT_APPLICATION_ID, help=f"New package ID (default: {DEFAULT_APPLICATION_ID})"
     )
     parser.add_argument("--fold-layout", action="store_true", help="Force the two existing fold-layout gates")
+    parser.add_argument(
+        "--signature-compat",
+        action="store_true",
+        help=(
+            "Enable the explicit in-process PackageInfo signature compatibility experiment "
+            "and use V1 signer entry name XINGIN"
+        ),
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Output APK path")
     parser.add_argument(
         "--report", type=Path, help="JSON report path (default: sibling rednote-custom-build-report.json)"
@@ -1252,8 +1315,11 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         merge_input_sha256 = input_sha256
         xapk_package_record: dict[str, Any] | None = None
         source_apks_for_merge: list[Path] = []
+        certificate_source_apk = input_path
+        certificate_source_signers: list[str] = []
         if extension == ".apk":
             input_signature = verify_apk_signature(input_path, apksigner)
+            certificate_source_signers = input_signature["signerCertificateSha256"]
             input_badging = get_badging(input_path, aapt2)
             with zipfile.ZipFile(input_path) as input_zip:
                 input_signature_entries = sorted(
@@ -1278,6 +1344,9 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             xapk_members, xapk_package_record = validate_xapk_members(
                 extracted_apks, apksigner, aapt2
             )
+            certificate_source_apk = Path(xapk_package_record["baseApk"])
+            base_index = source_apks_for_merge.index(certificate_source_apk)
+            certificate_source_signers = xapk_members[base_index]["signerCertificateSha256"]
             validate_xapk_manifest(xapk_manifest, xapk_package_record, extracted_apks)
             merged = temporary_root / "merged-input.apk"
             run_command(
@@ -1356,6 +1425,66 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 "--fold-layout changed DeviceInfoContainer.isHorizontalFolderDevice() and isPad() to return true."
             )
 
+        signature_compat_audit: dict[str, Any] = {"enabled": False}
+        signature_compat_added_entries: dict[str, Path] = {}
+        signature_compat_added_names: set[str] = set()
+        if args.signature_compat:
+            try:
+                if len(certificate_source_signers) != 1:
+                    raise BuildError(
+                        "--signature-compat requires exactly one verified source signer certificate"
+                    )
+                source_signer_sha256 = certificate_source_signers[0].lower()
+                application_class = resolve_manifest_application_class(manifest_root, old_package)
+                application_smali = find_smali_class(decoded_dir, application_class)
+                startup_hook_inserted = patch_application_startup(application_smali)
+                startup_touched_dex = dex_name_for_smali(decoded_dir, application_smali)
+                touched_dex_names.add(startup_touched_dex)
+
+                compat_work_dir = temporary_root / "signature-compat"
+                compat_work_dir.mkdir()
+                source_certificate = extract_signer_certificate(
+                    certificate_source_apk,
+                    compat_work_dir,
+                    expected_sha256=source_signer_sha256,
+                )
+                helper_dex = build_signature_spoof_dex(
+                    compat_work_dir,
+                    application_id,
+                    source_certificate,
+                )
+                helper_dex_name = next_dex_name(merge_input)
+                signature_compat_added_entries = {helper_dex_name: helper_dex}
+                signature_compat_added_names = {helper_dex_name}
+                signature_compat_audit = {
+                    "enabled": True,
+                    "mode": "in-process PackageInfo/SigningInfo compatibility",
+                    "applicationClass": application_class,
+                    "startupHookMethod": "attachBaseContext(Landroid/content/Context;)V",
+                    "startupHookInserted": startup_hook_inserted,
+                    "startupTouchedDexEntry": startup_touched_dex,
+                    "helperClass": "dev.kiri.xhsspoof.SignatureSpoof",
+                    "helperDexEntry": helper_dex_name,
+                    "helperDexSha256": sha256_file(helper_dex),
+                    "helperDexAddedToOutput": True,
+                    "spoofedPackageName": application_id,
+                    "sourceSignerCertificateSha256": source_signer_sha256,
+                    "v1SignerName": "XINGIN",
+                    "apkSigningCertificateRemainsOutputKeystoreSigner": True,
+                    "scope": (
+                        "The helper changes PackageInfo signatures and SigningInfo returned inside the app process. "
+                        "The output APK is signed separately with the configured keystore; the helper does not "
+                        "change the APK's cryptographic signer."
+                    ),
+                }
+                warnings.append(
+                    "--signature-compat adds a helper DEX, hooks Application.attachBaseContext(), and sets the V1 signer entry name to XINGIN."
+                )
+            except BuildError:
+                raise
+            except Exception as exc:
+                raise BuildError(f"Could not prepare --signature-compat mode: {exc}") from exc
+
         dex_rebuild_audit = prepare_selective_dex_rebuild(
             decoded_dir, merge_input, touched_dex_names
         )
@@ -1391,7 +1520,11 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
 
         candidate = temporary_root / "rednote-unsigned.apk"
         signature_cleanup = make_minimal_candidate(
-            merge_input, rebuilt, changed_entries, candidate
+            merge_input,
+            rebuilt,
+            changed_entries,
+            candidate,
+            added_entries=signature_compat_added_entries,
         )
         # The comparison baseline for XAPK runs is the APKEditor-merged file. Its
         # resource table and split layout already differ from the original splits.
@@ -1402,6 +1535,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             args.key_alias,
             zipalign,
             apksigner,
+            v1_signer_name="XINGIN" if args.signature_compat else None,
         )
         output_badging = get_badging(output_path, aapt2)
         if output_badging["packageName"] != application_id:
@@ -1411,7 +1545,12 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         if output_badging["versionCode"] != xapk_package_record["versionCode"]:
             raise BuildError("Output versionCode differs from the verified input")
 
-        payload_check = compare_payload_entries(merge_input, output_path, changed_entries)
+        payload_check = compare_payload_entries(
+            merge_input,
+            output_path,
+            changed_entries,
+            added_entries=signature_compat_added_names,
+        )
         report = {
             "schemaVersion": 1,
             "sourceDescription": redact_phone_like_text(source_description),
@@ -1472,6 +1611,19 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                     "The clone's default process name follows the new applicationId."
                 ),
             },
+            "signatureCompatibility": {
+                **signature_compat_audit,
+                **(
+                    {
+                        "actualOutputApkSignerCertificateSha256": signature[
+                            "signerCertificateSha256"
+                        ],
+                        "actualOutputApkSignerMatchesReportedSigner": True,
+                    }
+                    if args.signature_compat
+                    else {}
+                ),
+            },
             "dexRebuildAudit": dex_rebuild_audit,
             "buildConfiguration": {
                 "dexProcessingLibrary": "jf",
@@ -1480,7 +1632,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 "buildHeapLimitGiB": 4,
                 "zipalignPageSizeKiB": 16,
             },
-            "modifiedEntries": sorted(changed_entries),
+            "modifiedEntries": sorted(changed_entries | signature_compat_added_names),
             "manifestChanges": manifest_changes,
             "permissionCloneAudit": permission_clone_audit,
             "signatureCleanup": signature_cleanup,

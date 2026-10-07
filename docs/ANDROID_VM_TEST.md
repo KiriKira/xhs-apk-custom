@@ -4,11 +4,13 @@
 
 ## 当前测试状态
 
+此前三个非原版变体是未迁移生产签名兼容 helper 的启动对照，不能代表完整国内版 patch 流程。后续 `control-compat` / `fold-compat` 迁移 production Application hook、改为 REDnote 输入证书及克隆包名，并保留 `XINGIN` v1 条目名，单独记录构建与实际登录结果。
+
 当前测试使用 APKPure 分发的 REDnote `9.48.1` XAPK（SHA-256 `bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0`），不是从 Google Play 直接导出的 APK。XAPK 原始包、两个 split 和构建报告的来源信息见仓库 `output_apks/*build-report.json`。
 
 此前 API 35 Google APIs x86_64 KVM runner 中，原始包、换包名对照版和布局版都显示隐私协议首屏，PID 分别为 4357、4732、5090，20 秒观察未检测到崩溃。最新原生 ARM Waydroid 对照中，原版到达手机号登录表单且 PID 4077 健康；原包名重签、换包名 control、fold 三组则在隐私操作后以 `SIGNALED` / status 6 退出。后三组没有 native frames 或 abort message，不能据此确认签名校验或服务端风控。
 
-最新原版 [run 37614160907](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37614160907) 已在确认 +86 后实际输入授权手机号，点击一次 Next 并到达验证码页；`phone_entered=true`、`get_code_clicked=true`、`otp_input_visible=true`。未检测到环境不安全提示，当前等待用户验证码，尚未提交 OTP 或确认最终登录结果。此前 helper 返回 welcome 或国家列表定位失败的轮次没有输入号码，不能代表服务器拒绝。
+最新原版 [run 37614160907](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37614160907) 已在确认 +86 后实际输入授权手机号，点击一次 Next 并到达验证码页；`phone_entered=true`、`get_code_clicked=true`、`otp_input_visible=true`。未检测到环境不安全提示，该轮未提交 OTP 或确认最终登录结果，验证码等待已结束；后续测试关注完整 patched REDnote。此前 helper 返回 welcome 或国家列表定位失败的轮次没有输入号码，不能代表服务器拒绝。
 
 | 变体 | 安装与运行结果 | 证据 |
 | --- | --- | --- |
@@ -19,7 +21,7 @@
 | 换包名对照版旧 APK | API 30 深度预览记录 `XhsActivity.getResources()` 相关 NPE；这是修复前结果。 | 本地预览记录 |
 | 主进程修复后的换包名对照版 | 较早 API 30 run 37601175067 可同意隐私协议，未再出现 NPE；随后 native `SIGABRT`，状态码 6，native 栈包含 `libndk_translation.so`。 | [run 37601175067](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37601175067) |
 | A：APKPure 原始完整 split、原包名和输入签名 | 原生 ARM [run 37611437295](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37611437295) 到达手机号登录表单，PID 4077 健康。stock 窗口 1080×1920、密度 420，欢迎页按钮完整显示。 | 表单可见；`phone_entered=false`、`get_code=false`。未输入号码或请求短信。 |
-| A 最新实际手机号提交 | 原生 ARM [run 37614160907](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37614160907)：+86 表单、PID 4031 健康，复用当前页面。 | 已输入授权手机号并点击一次 Next，进入验证码页；未检测到环境不安全。等待用户验证码，尚未完成登录。 |
+| A 最新实际手机号提交 | 原生 ARM [run 37614160907](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37614160907)：+86 表单、PID 4031 健康，复用当前页面。 | 已输入授权手机号并点击一次 Next，进入验证码页；未检测到环境不安全。未提交 OTP，验证码等待已结束，尚未完成登录。 |
 | B：原包名，仅重签输入的三 split | 原生 ARM [run 37611717935](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37611717935)；审计确认所有非签名 payload hashes 一致。隐私操作后以 `SIGNALED` / status 6 退出；无 native frames、无 abort message。 | 未输入号码或请求短信。 |
 | C：换包名 control | 原生 ARM [run 37611443776](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37611443776)；隐私操作后 `SIGNALED` / status 6 退出，无 native frames、无 abort message。 | 未输入号码或请求短信。 |
 | D：换包名 fold | 原生 ARM [run 37611440851](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37611440851)；与 control 一样以 `SIGNALED` / status 6 退出，无 native frames、无 abort message。 | 未输入号码或请求短信。 |
