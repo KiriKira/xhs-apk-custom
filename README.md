@@ -59,8 +59,10 @@ that two distribution channels deliver identical files. See
 [runtime prerequisites and test matrix](docs/REDNOTE_RUNTIME.md). Hosted API 35
 KVM tests installed all three variants and reached the privacy screen without a
 crash during a 20-second observation. Deeper x86 previews encountered native
-crashes before the phone form; native ARM64 Waydroid testing is ongoing. No phone
-number, SMS request, OTP submission or login has been tested yet. See the
+crashes before the phone form. Native ARM64 Waydroid comparisons found startup
+exits in the re-sign-only, renamed control and layout variants. The original
+accepted an authorized +86 phone submission and reached the SMS-code page without
+an unsafe-environment prompt; OTP verification and final login remain pending. See the
 [runtime evidence](docs/ANDROID_VM_TEST.md) for the limits of these results.
 
 With Java 21, APKEditor in `bins/apkeditor.jar`, Python 3.10+, and Android build-tools
