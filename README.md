@@ -40,11 +40,15 @@ The persistent test signing key is kept in `ks_pkcs12.keystore` so future custom
 
 The APKPure REDnote 9.48.1 base is built as `rednote-fold-custom.apk`, package `com.kirikira.rednote.fold`, using the same signing key. It can coexist with the domestic `com.xingin.xhs` build.
 
-Release: https://github.com/KiriKira/xhs-apk-custom/releases/tag/rednote-v9.48.1-1
+Ad-display patch release: https://github.com/KiriKira/xhs-apk-custom/releases/tag/rednote-v9.48.1-2
+
+Rollback (without the ad-display patch): https://github.com/KiriKira/xhs-apk-custom/releases/tag/rednote-v9.48.1-1
+
+Both REDnote releases retain Android `versionCode=9481803`, `versionName=9.48.1`, the same package and signing key. Patch revisions are numbered in Release tags. Install the previous APK over the current one to roll back while retaining app data. The release workflow verifies this overlay sequence on ARM Waydroid before publishing; no account login is needed for that check.
 
 `.github/workflows/build-rednote.yml` builds this configuration separately and can publish a new REDnote release on manual dispatch or a `rednote-v*` tag push. It preserves the existing domestic release and assets.
 
-The patched REDnote build reached the SMS verification page in ARM Waydroid, and the account owner confirmed receipt of the SMS. Final verification/login was not tested at the owner's request. See [source, patches and validation](docs/REDNOTE_RELEASE.md).
+The original REDnote fold build reached the SMS verification page in ARM Waydroid, and the account owner confirmed receipt of the SMS. The ad-display build also reached that page using a separately authorized number. Final verification/login was not tested at the owner's request. See [source, patches and validation](docs/REDNOTE_RELEASE.md) and [the feed ad display patch](docs/FEED_AD_DISPLAY_PATCH.md).
 
 ## Implementation
 

@@ -1,0 +1,442 @@
+name: REDnote fold release rollback check
+
+on:
+  workflow_call:
+    inputs:
+      test_run_id:
+        description: Workflow run that uploaded the source-tested REDnote APK artifact
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rollback-check:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TEST_PACKAGE: com.kirikira.rednote.fold
+      EXPECTED_VERSION_CODE: "9481803"
+      EXPECTED_VERSION_NAME: 9.48.1
+      EXPECTED_SIGNER_SHA256: 637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4
+      WAYLAND_DISPLAY: wayland-0
+    steps:
+      - name: Download the candidate APK from the source-tested run
+        uses: actions/download-artifact@v6
+        with:
+          name: rednote-fold-custom
+          path: release-assets
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.test_run_id }}
+
+      - name: Download the pinned baseline release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s release-assets/rednote-fold-custom.apk
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 240 \
+            'https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-1/rednote-fold-custom.apk' \
+            --output release-assets/rednote-fold-custom-baseline.apk
+          echo '776a835279b476bd0314dc77488fc43f03244869f2fed48aa8ee0e4d9e930773  release-assets/rednote-fold-custom-baseline.apk' | sha256sum --check
+          baseline_sha256="$(sha256sum release-assets/rednote-fold-custom-baseline.apk | awk '{print $1}')"
+          candidate_sha256="$(sha256sum release-assets/rednote-fold-custom.apk | awk '{print $1}')"
+          {
+            echo "BASELINE_APK_SHA256=$baseline_sha256"
+            echo "CANDIDATE_APK_SHA256=$candidate_sha256"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Binder, Waydroid, ADB, and APK signature tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          kernel_release="$(uname -r)"
+          sudo apt-get update -qq
+          module_package="linux-modules-extra-$kernel_release"
+          module_candidate="$(apt-cache policy "$module_package" | awk '/Candidate:/ { print $2; exit }')"
+          if [ -z "$module_candidate" ] || [ "$module_candidate" = '(none)' ]; then
+            echo "No exact Binder module package candidate for running kernel $kernel_release" >&2
+            exit 1
+          fi
+          sudo apt-get install -y --no-install-recommends "$module_package=$module_candidate"
+          sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
+          test -d /sys/module/binder_linux
+          grep -qw binder /proc/filesystems
+          binderfs_probe="$RUNNER_TEMP/binderfs-probe"
+          sudo mkdir -p "$binderfs_probe"
+          sudo mount -t binder binder "$binderfs_probe"
+          test -c "$binderfs_probe/binder-control"
+          sudo umount "$binderfs_probe"
+          sudo rmdir "$binderfs_probe"
+
+          sudo apt-get install -y --no-install-recommends adb apksigner ca-certificates curl dbus-daemon gnupg libpulse0 pulseaudio unzip weston
+          curl --fail --location --retry 2 --connect-timeout 20 --max-time 90 https://repo.waydro.id | sudo bash
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends waydroid
+          command -v adb
+          command -v apksigner
+          command -v weston
+          command -v waydroid
+          adb version
+          weston --version
+          waydroid --version
+
+      - name: Verify both APKs use the release package signer
+        shell: bash
+        run: |
+          set -euo pipefail
+          for apk in release-assets/rednote-fold-custom-baseline.apk release-assets/rednote-fold-custom.apk; do
+            signer_report="$(apksigner verify --print-certs "$apk")"
+            printf '%s\n' "$signer_report"
+            signer_sha256="$(printf '%s\n' "$signer_report" | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ { print tolower($NF); exit }')"
+            if [ "$signer_sha256" != "$EXPECTED_SIGNER_SHA256" ]; then
+              echo "Unexpected APK signer for $apk: ${signer_sha256:-missing}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Initialize a clean Vanilla Android image and start headless Waydroid
+        id: waydroid
+        shell: bash
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/waydroid-runtime"
+          install -d -m 700 "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "WAYLAND_DISPLAY=$WAYLAND_DISPLAY" >> "$GITHUB_ENV"
+          sudo timeout 900 waydroid init -s VANILLA
+          sudo python3 - <<'PYCONFIG'
+          import configparser, pathlib
+          path = pathlib.Path('/var/lib/waydroid/waydroid.cfg')
+          config = configparser.ConfigParser()
+          config.read(path)
+          if not config.has_section('properties'):
+              config.add_section('properties')
+          config['properties']['ro.hardware.gralloc'] = 'default'
+          config['properties']['ro.hardware.egl'] = 'swiftshader'
+          with path.open('w') as stream:
+              config.write(stream)
+          PYCONFIG
+          sudo timeout 120 waydroid upgrade -o
+          sudo systemctl enable --now waydroid-container
+          systemctl is-active --quiet waydroid-container
+
+          rm -f "$RUNNER_TEMP/waydroid-dbus-address" "$RUNNER_TEMP/waydroid-session-supervisor.log" "$RUNNER_TEMP/weston.log"
+          nohup setsid dbus-run-session -- bash -c '
+            set -euo pipefail
+            echo "$DBUS_SESSION_BUS_ADDRESS" > "$RUNNER_TEMP/waydroid-dbus-address"
+            pulseaudio --daemonize=no --exit-idle-time=-1 --log-target="file:$RUNNER_TEMP/pulseaudio.log" &
+            pulse_pid=$!
+            for attempt in $(seq 1 20); do
+              if [ -S "$XDG_RUNTIME_DIR/pulse/native" ]; then break; fi
+              if ! kill -0 "$pulse_pid" 2>/dev/null; then
+                tail -n 80 "$RUNNER_TEMP/pulseaudio.log" || true
+                exit 1
+              fi
+              sleep 1
+            done
+            test -S "$XDG_RUNTIME_DIR/pulse/native"
+            weston --no-config --backend=headless --renderer=pixman --width=1080 --height=1920 --socket="$WAYLAND_DISPLAY" --log="$RUNNER_TEMP/weston.log" &
+            weston_pid=$!
+            for attempt in $(seq 1 60); do
+              if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then break; fi
+              if ! kill -0 "$weston_pid" 2>/dev/null; then
+                tail -n 80 "$RUNNER_TEMP/weston.log" || true
+                exit 1
+              fi
+              sleep 1
+            done
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+            if waydroid session start; then
+              echo "Waydroid user session terminated before cleanup"
+              exit 1
+            else
+              status=$?
+              echo "Waydroid user session failed with exit $status"
+              exit "$status"
+            fi
+          ' > "$RUNNER_TEMP/waydroid-session-supervisor.log" 2>&1 </dev/null &
+          supervisor_pid=$!
+          echo "$supervisor_pid" > "$RUNNER_TEMP/waydroid-session-supervisor.pid"
+          for attempt in $(seq 1 90); do
+            if ! kill -0 "$supervisor_pid" 2>/dev/null; then
+              tail -n 100 "$RUNNER_TEMP/waydroid-session-supervisor.log" || true
+              tail -n 100 "$RUNNER_TEMP/weston.log" || true
+              exit 1
+            fi
+            if [ -s "$RUNNER_TEMP/waydroid-dbus-address" ] && [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then break; fi
+            sleep 1
+          done
+          test -s "$RUNNER_TEMP/waydroid-dbus-address"
+          export DBUS_SESSION_BUS_ADDRESS="$(cat "$RUNNER_TEMP/waydroid-dbus-address")"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          timeout 10 waydroid status || true
+
+          debug_key="$RUNNER_TEMP/waydroid-host-adbkey"
+          adb keygen "$debug_key"
+          chmod 600 "$debug_key"
+          export ADB_VENDOR_KEYS="$debug_key"
+          echo "ADB_VENDOR_KEYS=$ADB_VENDOR_KEYS" >> "$GITHUB_ENV"
+          adb start-server
+          android_ready=false
+          shell_deadline=$((SECONDS + 240))
+          while ((SECONDS < shell_deadline)); do
+            sudo timeout 5 lxc-unfreeze -P /var/lib/waydroid/lxc -n waydroid >/dev/null 2>&1 || true
+            shell_boot="$(sudo timeout 8 waydroid shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            if [ "$shell_boot" = 1 ]; then android_ready=true; break; fi
+            sleep 3
+          done
+          test "$android_ready" = true
+          nohup setsid waydroid show-full-ui > "$RUNNER_TEMP/waydroid-full-ui.log" 2>&1 </dev/null &
+          echo "$!" > "$RUNNER_TEMP/waydroid-full-ui.pid"
+          sudo timeout 5 lxc-unfreeze -P /var/lib/waydroid/lxc -n waydroid >/dev/null 2>&1 || true
+          sudo timeout 20 waydroid shell -- sh -c '
+            set -eu
+            mkdir -p /data/misc/adb
+            cat > /data/misc/adb/adb_keys
+            chown 1000:2000 /data/misc/adb/adb_keys
+            chmod 640 /data/misc/adb/adb_keys
+            restorecon /data/misc/adb/adb_keys
+            test "$(getprop ro.adb.secure)" = 1
+            setprop ctl.restart adbd
+          ' < "$debug_key.pub"
+          sleep 3
+
+          waydroid_ip=""
+          adb_ready=false
+          is_ipv4() {
+            WAYDROID_IP="${1:-}" python3 - <<'PYIP'
+          import ipaddress, os, sys
+          try:
+              address = ipaddress.ip_address(os.environ.get('WAYDROID_IP', ''))
+              if not isinstance(address, ipaddress.IPv4Address):
+                  raise ValueError('IPv4 required')
+          except ValueError:
+              sys.exit(1)
+          PYIP
+          }
+          adb_deadline=$((SECONDS + 180))
+          attempt=0
+          while ((SECONDS < adb_deadline)); do
+            attempt=$((attempt + 1))
+            if ! kill -0 "$supervisor_pid" 2>/dev/null; then break; fi
+            sudo timeout 5 lxc-unfreeze -P /var/lib/waydroid/lxc -n waydroid >/dev/null 2>&1 || true
+            status_output="$(timeout 10 waydroid status 2>/dev/null || true)"
+            waydroid_ip="$(echo "$status_output" | awk -F: '/IP address:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+            if ! is_ipv4 "$waydroid_ip"; then
+              for lxc_ip in $(sudo timeout 8 lxc-info -P /var/lib/waydroid/lxc -n waydroid -iH 2>/dev/null || true); do
+                if is_ipv4 "$lxc_ip"; then waydroid_ip="$lxc_ip"; break; fi
+              done
+            fi
+            if is_ipv4 "$waydroid_ip"; then
+              test_serial="$waydroid_ip:5555"
+              timeout 3 adb disconnect "$test_serial" || true
+              timeout 8 adb connect "$test_serial" || true
+              device_state="$(timeout 5 adb -s "$test_serial" get-state 2>&1 || true)"
+              if [ "$device_state" = device ]; then adb_ready=true; break; fi
+            fi
+            sleep 2
+          done
+          if [ "$adb_ready" != true ]; then
+            echo "Waydroid did not report a valid IPv4 address and connected ADB device" >&2
+            waydroid status || true
+            exit 1
+          fi
+
+          test_serial="$waydroid_ip:5555"
+          echo "TEST_SERIAL=$test_serial" >> "$GITHUB_ENV"
+          booted=""
+          boot_deadline=$((SECONDS + 300))
+          while ((SECONDS < boot_deadline)); do
+            booted="$(timeout 5 adb -s "$test_serial" shell getprop sys.boot_completed | tr -d '\r' || true)"
+            if [ "$booted" = 1 ]; then break; fi
+            sleep 5
+          done
+          test "$booted" = 1
+          abi_list="$(adb -s "$test_serial" shell getprop ro.product.cpu.abilist | tr -d '\r')"
+          android_api="$(adb -s "$test_serial" shell getprop ro.build.version.sdk | tr -d '\r')"
+          echo "ANDROID_API=$android_api" >> "$GITHUB_ENV"
+          case ",$abi_list," in
+            *,arm64-v8a,*) ;;
+            *) echo "ARM64 Android ABI is not available" >&2; exit 1 ;;
+          esac
+          test "$android_api" -ge 33
+          adb -s "$test_serial" shell service check package
+          adb -s "$test_serial" shell service check activity
+
+      - name: Install baseline, overlay candidate, roll back, and overlay again
+        id: overlay-check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          report_state='rollback-check-state.json'
+          app_uid=''
+          completed_installs=()
+          completed_markers=()
+          update_state() {
+            STATE_INSTALLS="$(IFS=,; echo "${completed_installs[*]}")" \
+            STATE_MARKERS="$(IFS=,; echo "${completed_markers[*]}")" \
+            STATE_APP_UID="$app_uid" \
+            python3 - "$report_state" <<'PYSTATE'
+          import json, os, pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          data = json.loads(path.read_text()) if path.exists() else {}
+          data.update({
+              'installSequence': [x for x in os.environ['STATE_INSTALLS'].split(',') if x],
+              'markerChecks': [x for x in os.environ['STATE_MARKERS'].split(',') if x],
+              'appUid': int(os.environ['STATE_APP_UID']) if os.environ['STATE_APP_UID'] else None,
+          })
+          path.write_text(json.dumps(data, ensure_ascii=False))
+          PYSTATE
+          }
+          check_installed_package() {
+            local label="$1"
+            local package_dump package_listing metadata uid version_code version_name
+            package_dump="$(adb -s "$TEST_SERIAL" shell dumpsys package "$TEST_PACKAGE" | tr -d '\r')"
+            package_listing="$(adb -s "$TEST_SERIAL" shell cmd package list packages -U "$TEST_PACKAGE" | tr -d '\r')"
+            metadata="$(PACKAGE_DUMP="$package_dump" PACKAGE_LISTING="$package_listing" python3 - <<'PYMETA'
+          import os, re, sys
+          package = os.environ.get('TEST_PACKAGE', 'com.kirikira.rednote.fold')
+          dump = os.environ['PACKAGE_DUMP']
+          listing = os.environ['PACKAGE_LISTING']
+          code = re.search(r'^\s*versionCode=(\d+)\b', dump, re.M)
+          name = re.search(r'^\s*versionName=(\S+)', dump, re.M)
+          uid = re.search(r'^package:' + re.escape(package) + r'\s+uid:(\d+)\s*$', listing, re.M)
+          if not code or not name or not uid:
+              print('Could not read installed package version or UID', file=sys.stderr)
+              sys.exit(1)
+          print(f'{code.group(1)}\t{name.group(1)}\t{uid.group(1)}')
+          PYMETA
+            )"
+            IFS=$'\t' read -r version_code version_name uid <<< "$metadata"
+            test "$version_code" = "$EXPECTED_VERSION_CODE"
+            test "$version_name" = "$EXPECTED_VERSION_NAME"
+            if [ -z "$app_uid" ]; then
+              app_uid="$uid"
+            else
+              test "$uid" = "$app_uid"
+            fi
+            completed_installs+=("$label")
+            update_state
+            echo "$label: package=$TEST_PACKAGE versionCode=$version_code versionName=$version_name uid=$uid"
+          }
+          verify_marker() {
+            local label="$1"
+            sudo timeout 20 waydroid shell -- sh -c '
+              set -eu
+              marker=/data/user/0/com.kirikira.rednote.fold/files/.patch-rollback-probe
+              test "$(cat "$marker")" = rednote-v9481-rollback-probe-v1
+              test "$(stat -c %u "$marker")" = "$1"
+            ' sh "$app_uid"
+            completed_markers+=("$label")
+            update_state
+            echo "$label: app data marker and owner UID preserved"
+          }
+          install_overlay() {
+            local label="$1"
+            local apk="$2"
+            adb -s "$TEST_SERIAL" install -r "$apk"
+            check_installed_package "$label"
+            if [ "${#completed_markers[@]}" -gt 0 ]; then
+              verify_marker "$label"
+            fi
+          }
+
+          python3 - <<'PYINIT'
+          import json, os, pathlib
+          pathlib.Path('rollback-check-state.json').write_text(json.dumps({
+              'baselineApkSha256': os.environ['BASELINE_APK_SHA256'],
+              'candidateApkSha256': os.environ['CANDIDATE_APK_SHA256'],
+              'androidApi': os.environ['ANDROID_API'],
+              'installSequence': [],
+              'markerChecks': [],
+              'appUid': None,
+          }, ensure_ascii=False))
+          PYINIT
+
+          install_overlay baseline-initial release-assets/rednote-fold-custom-baseline.apk
+          sudo timeout 20 waydroid shell -- sh -c '
+            set -eu
+            app_uid="$1"
+            data_dir=/data/user/0/com.kirikira.rednote.fold/files
+            marker="$data_dir/.patch-rollback-probe"
+            mkdir -p "$data_dir"
+            chown "$app_uid:$app_uid" "$data_dir"
+            chmod 700 "$data_dir"
+            printf '%s\n' rednote-v9481-rollback-probe-v1 > "$marker"
+            chown "$app_uid:$app_uid" "$marker"
+            chmod 600 "$marker"
+            restorecon -RF /data/user/0/com.kirikira.rednote.fold
+            test "$(cat "$marker")" = rednote-v9481-rollback-probe-v1
+            test "$(stat -c %u "$marker")" = "$app_uid"
+          ' sh "$app_uid"
+          completed_markers+=(baseline-initial)
+          update_state
+
+          install_overlay candidate-first-overlay release-assets/rednote-fold-custom.apk
+          install_overlay baseline-rollback release-assets/rednote-fold-custom-baseline.apk
+          install_overlay candidate-second-overlay release-assets/rednote-fold-custom.apk
+
+      - name: Stop Waydroid and remove runner ADB keys
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -s "$RUNNER_TEMP/waydroid-full-ui.pid" ]; then
+            ui_pid="$(cat "$RUNNER_TEMP/waydroid-full-ui.pid")"
+            kill -TERM -- "-$ui_pid" 2>/dev/null || kill -TERM "$ui_pid" 2>/dev/null || true
+          fi
+          if [ -s "$RUNNER_TEMP/waydroid-session-supervisor.pid" ]; then
+            supervisor_pid="$(cat "$RUNNER_TEMP/waydroid-session-supervisor.pid")"
+            kill -TERM -- "-$supervisor_pid" 2>/dev/null || kill -TERM "$supervisor_pid" 2>/dev/null || true
+          fi
+          sudo systemctl stop waydroid-container >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/waydroid-host-adbkey" "$RUNNER_TEMP/waydroid-host-adbkey.pub"
+          rm -f "$RUNNER_TEMP/waydroid-session-supervisor.pid" "$RUNNER_TEMP/waydroid-full-ui.pid"
+
+      - name: Write the limited rollback report
+        if: always()
+        shell: bash
+        env:
+          CHECK_RUN_ID: ${{ inputs.test_run_id }}
+          CHECK_JOB_STATUS: ${{ job.status }}
+          CHECK_TEST_STEP_OUTCOME: ${{ steps.overlay-check.outcome }}
+        run: |
+          python3 - <<'PYREPORT'
+          import json, os, pathlib
+          state_path = pathlib.Path('rollback-check-state.json')
+          state = json.loads(state_path.read_text()) if state_path.is_file() else {}
+          passed = os.environ.get('CHECK_JOB_STATUS') == 'success' and os.environ.get('CHECK_TEST_STEP_OUTCOME') == 'success'
+          report = {
+              'status': 'passed' if passed else 'failed',
+              'sourceRunId': os.environ['CHECK_RUN_ID'],
+              'packageName': 'com.kirikira.rednote.fold',
+              'versionCode': 9481803,
+              'versionName': '9.48.1',
+              'signerCertificateSha256': '637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4',
+              'baselineApkSha256': state.get('baselineApkSha256'),
+              'candidateApkSha256': state.get('candidateApkSha256'),
+              'androidApi': state.get('androidApi'),
+              'appUid': state.get('appUid'),
+              'installSequence': state.get('installSequence', []),
+              'markerChecks': state.get('markerChecks', []),
+              'markerPath': '/data/user/0/com.kirikira.rednote.fold/files/.patch-rollback-probe',
+          }
+          pathlib.Path('rollback-check.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+          print(json.dumps(report, ensure_ascii=False))
+          PYREPORT
+
+      - name: Upload the rollback report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rednote-rollback-check
+          path: rollback-check.json
+          if-no-files-found: error
+          retention-days: 1
