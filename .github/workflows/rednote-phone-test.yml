@@ -26,6 +26,7 @@ jobs:
       contents: write
     env:
       TEST_VARIANT: original
+      TEST_API: "30"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
@@ -44,13 +45,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends libpulse0
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "emulator" "platform-tools" "build-tools;35.0.0" \
-            "platforms;android-35" "system-images;android-35;google_apis;x86_64"
+            "platforms;android-35" "system-images;android-$TEST_API;google_apis;x86_64"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
           "$ANDROID_HOME/emulator/emulator" -accel-check
 
-      - name: Start Android 15 with hardware acceleration
+      - name: Start the selected Android version with hardware acceleration
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
@@ -61,12 +62,12 @@ jobs:
           emulator -version
           mkdir -p "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME"
           printf 'no\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
-            --force --name rednote-ci --package 'system-images;android-35;google_apis;x86_64' \
-            --device pixel_6 --path "$ANDROID_AVD_HOME/rednote-ci.avd"
-          printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-35\n' \
-            "$ANDROID_AVD_HOME/rednote-ci.avd" > "$ANDROID_AVD_HOME/rednote-ci.ini"
+            --force --name rednote-ci --package "system-images;android-$TEST_API;google_apis;x86_64" \
+            --device pixel_4 --path "$ANDROID_AVD_HOME/rednote-ci.avd"
+          printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-%s\n' \
+            "$ANDROID_AVD_HOME/rednote-ci.avd" "$TEST_API" > "$ANDROID_AVD_HOME/rednote-ci.ini"
           emulator -list-avds
-          cat "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/source.properties"
+          cat "$ANDROID_HOME/system-images/android-$TEST_API/google_apis/x86_64/source.properties"
           nohup emulator -avd rednote-ci -accel on -cores 2 -memory 3072 \
             -gpu swiftshader -no-window -no-audio -no-boot-anim -no-snapshot \
             -port 5554 -verbose > emulator-boot.log 2>&1 &

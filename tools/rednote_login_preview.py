@@ -13,8 +13,8 @@ import rednote_emulator_smoke as smoke
 import rednote_phone_test as ui
 
 
-PREVIEW_SECONDS = 120
-CAPTURE_RESERVE_SECONDS = 45
+PREVIEW_SECONDS = 135
+CAPTURE_RESERVE_SECONDS = 60
 PHONE_DIRECT = ("其他手机号登录", "其他手机号码登录", "手机号登录", "手机号码登录", "手机号登陆",
                 "phone number login", "log in with phone", "use phone number")
 OTHER_LOGIN = ("其他登录方式", "其他方式登录", "更多登录方式", "other login options", "more sign-in options")
@@ -25,6 +25,11 @@ PERMISSION_PACKAGE = "com.google.android.permissioncontroller"
 PERMISSION_MESSAGE_ID = "com.android.permissioncontroller:id/permission_message"
 PERMISSION_DENY_ID = "com.android.permissioncontroller:id/permission_deny_button"
 PERMISSION_MESSAGE = "allow rednote to send you notifications?"
+EXIT_RECORD_RE = re.compile(r"(?m)^\s*#\d+\s*:\s*")
+EXIT_PROCESS_RE = re.compile(r"\b(?:process|processName)\s*[=:]\s*([^,\s)]+)", re.I)
+EXIT_REASON_RE = re.compile(r"\breason\s*[=:]\s*(\d+)(?:\s*\(([A-Z0-9_]+)\))?", re.I)
+EXIT_STATUS_RE = re.compile(r"\bstatus\s*[=:]\s*(-?\d+)", re.I)
+EXIT_PID_RE = re.compile(r"\bpid\s*[=:]\s*(\d+)", re.I)
 
 
 class BoundedAdb(ui.Adb):
@@ -62,6 +67,43 @@ def notification_deny_target(root):
     if len(targets) != 1:
         return True, None, len(targets)
     return True, next(iter(targets.values())), 1
+
+
+def parse_exit_info(output, package):
+    """Extract only structured exit fields for this package; discard all raw text."""
+    starts = list(EXIT_RECORD_RE.finditer(output))
+    blocks = [output[m.end():starts[i + 1].start() if i + 1 < len(starts) else len(output)]
+              for i, m in enumerate(starts)] or [output]
+    records = []
+    for block in blocks:
+        process = EXIT_PROCESS_RE.search(block)
+        if not process or not (process.group(1) == package or process.group(1).startswith(package + ":")):
+            continue
+        reason = EXIT_REASON_RE.search(block)
+        status = EXIT_STATUS_RE.search(block)
+        pid = EXIT_PID_RE.search(block)
+        records.append({
+            "reason_code": int(reason.group(1)) if reason else None,
+            "reason_enum": reason.group(2).upper() if reason and reason.group(2) else None,
+            "status": int(status.group(1)) if status else None,
+            "pid": int(pid.group(1)) if pid else None,
+        })
+        if len(records) == 5:
+            break
+    return records
+
+
+def combine_crash_summaries(*summaries):
+    events, seen = [], set()
+    for summary in summaries:
+        for event in summary.get("events", []):
+            key = json.dumps(event, sort_keys=True)
+            if key not in seen:
+                events.append(event)
+                seen.add(key)
+            if len(events) >= 10:
+                break
+    return {"detected": bool(events), "events": events}
 
 
 def run(serial, package):
@@ -194,7 +236,7 @@ def run(serial, package):
         report["result_category"] = "preview_error"
         report["error_type"] = type(exc).__name__
 
-    # Keep only process IDs and a redacted crash summary; never persist raw logcat.
+    # Keep only process IDs and structured crash/exit summaries; never persist raw logs.
     adb.deadline = deadline
     try:
         ok, output, timed = adb.run("shell", "pidof", package, timeout=5)
@@ -204,10 +246,26 @@ def run(serial, package):
         if final_pids:
             report["observed_pids"] = list(dict.fromkeys(observed_pids + final_pids))
         ok, logs, log_timed = adb.run("logcat", "-d", "-v", "brief", "-t", "1000", timeout=10)
-        summary = smoke.extract_crash_summary(logs.decode("utf-8", errors="replace") if ok else "", package)
+        log_summary = smoke.extract_crash_summary(logs.decode("utf-8", errors="replace") if ok else "", package)
+        crash_ok, crash_logs, crash_timed = adb.run(
+            "logcat", "-d", "-b", "crash", "-v", "brief", timeout=10
+        )
+        crash_summary = smoke.extract_crash_summary(
+            crash_logs.decode("utf-8", errors="replace") if crash_ok else "", package
+        )
+        exit_ok, exit_output, exit_timed = adb.run(
+            "shell", "dumpsys", "activity", "exit-info", package, timeout=8
+        )
+        exit_records = parse_exit_info(
+            exit_output.decode("utf-8", errors="replace") if exit_ok else "", package
+        )
         report["runtime_diagnostics"] = {
-            "pidof_timed_out": timed, "logcat_timed_out": log_timed,
-            "crash_summary": summary,
+            "pidof_timed_out": timed,
+            "logcat_timed_out": log_timed,
+            "crash_buffer_timed_out": crash_timed,
+            "exit_info_timed_out": exit_timed,
+            "crash_summary": combine_crash_summaries(log_summary, crash_summary),
+            "exit_info": {"parsed_record_count": len(exit_records), "records": exit_records},
         }
     except Exception as exc:
         report["runtime_diagnostics"] = {"error_type": type(exc).__name__,
