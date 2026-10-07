@@ -11,7 +11,9 @@ from build_rednote import (
     BuildError,
     dex_name_for_smali,
     is_signature_metadata,
+    make_selected_dex_decode_input,
     patch_main_process_package_gate,
+    parse_args,
     prepare_selective_dex_rebuild,
     reject_split_manifest,
     transform_manifest,
@@ -327,6 +329,85 @@ class SelectiveDexRebuildTests(unittest.TestCase):
             prepare_selective_dex_rebuild(
                 self.decoded, self.baseline, {"classes3.dex"}
             )
+
+
+class SelectiveDexDecodeInputTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="rednote-decode-input-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.temp_dir, ignore_errors=True))
+        self.baseline = self.temp_dir / "baseline.apk"
+        self.filtered = self.temp_dir / "filtered.apk"
+        with zipfile.ZipFile(self.baseline, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"manifest")
+            archive.writestr("resources.arsc", b"resources")
+            archive.writestr("assets/asset.bin", b"asset")
+            archive.writestr("lib/arm64-v8a/libsample.so", b"native")
+            archive.writestr("classes.dex", b"dex-primary")
+            archive.writestr("classes4.dex", b"dex-fold")
+            archive.writestr("classes17.dex", b"dex-app-and-process-gate")
+
+    def test_filtered_input_keeps_non_dex_payload_and_original_dex_names(self):
+        audit = make_selected_dex_decode_input(
+            self.baseline,
+            self.filtered,
+            {"classes4.dex", "classes17.dex"},
+        )
+        self.assertEqual(audit["sourceDexEntries"], ["classes.dex", "classes17.dex", "classes4.dex"])
+        self.assertEqual(audit["selectedDexEntries"], ["classes17.dex", "classes4.dex"])
+        self.assertEqual(audit["excludedDexEntries"], ["classes.dex"])
+        self.assertTrue(audit["selectedDexEntryNamesPreserved"])
+
+        with zipfile.ZipFile(self.baseline) as source, zipfile.ZipFile(self.filtered) as filtered:
+            self.assertEqual(
+                set(filtered.namelist()),
+                {
+                    "AndroidManifest.xml",
+                    "resources.arsc",
+                    "assets/asset.bin",
+                    "lib/arm64-v8a/libsample.so",
+                    "classes4.dex",
+                    "classes17.dex",
+                },
+            )
+            self.assertEqual(filtered.read("classes4.dex"), source.read("classes4.dex"))
+            self.assertEqual(filtered.read("classes17.dex"), source.read("classes17.dex"))
+            for name in ("AndroidManifest.xml", "resources.arsc", "assets/asset.bin", "lib/arm64-v8a/libsample.so"):
+                self.assertEqual(filtered.read(name), source.read(name))
+
+        decoded = self.temp_dir / "decoded"
+        for dex_stem in ("classes4", "classes17"):
+            (decoded / "smali" / dex_stem).mkdir(parents=True)
+        rebuild_audit = prepare_selective_dex_rebuild(
+            decoded,
+            self.baseline,
+            {"classes4.dex", "classes17.dex"},
+        )
+        self.assertEqual(rebuild_audit["passthroughDexEntries"], ["classes.dex"])
+        self.assertEqual((decoded / "dex" / "classes.dex").read_bytes(), b"dex-primary")
+
+    def test_missing_selected_dex_is_rejected_and_repeated_flag_parses(self):
+        with self.assertRaisesRegex(BuildError, "Selected DEX entries are missing"):
+            make_selected_dex_decode_input(
+                self.baseline,
+                self.filtered,
+                {"classes18.dex"},
+            )
+
+        args = parse_args(
+            [
+                "--input",
+                "source.xapk",
+                "--sha256",
+                "0" * 64,
+                "--source",
+                "pinned workflow fixture",
+                "--decode-dex",
+                "classes17.dex",
+                "--decode-dex",
+                "classes4.dex",
+            ]
+        )
+        self.assertEqual(args.decode_dex, ["classes17.dex", "classes4.dex"])
 
 
 if __name__ == "__main__":

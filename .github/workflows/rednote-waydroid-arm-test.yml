@@ -90,11 +90,22 @@ jobs:
           weston --version
           waydroid --version
 
+      - name: Restore the verified compatibility APK build
+        if: endsWith(env.TEST_VARIANT, '-compat')
+        id: apk-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            output_apks/phone-test.apk
+            rednote-report
+          key: rednote-9481803-${{ env.TEST_VARIANT }}-sdk35-apkeditor149-${{ hashFiles('build_rednote.py', 'rednote_signature_compat.py', 'ks_pkcs12.keystore') }}
+
       - name: Fetch pinned source and build the selected clone before Android startup
         shell: bash
         env:
           KEYSTORE_PASSWORD: "123456789"
           KEY_PASSWORD: "123456789"
+          APK_CACHE_HIT: ${{ steps.apk-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
           case "$TEST_VARIANT" in
@@ -102,6 +113,23 @@ jobs:
             *) echo "Unsupported test variant: $TEST_VARIANT"; exit 2 ;;
           esac
           mkdir -p rednote-input/original bins output_apks rednote-report
+          if [ "$APK_CACHE_HIT" = true ]; then
+            python3 - <<'PYCACHE'
+          import hashlib, json, os, pathlib
+          variant = os.environ['TEST_VARIANT']
+          report = json.loads(pathlib.Path('rednote-report', variant + '-build.json').read_text())
+          apk = pathlib.Path('output_apks/phone-test.apk')
+          assert hashlib.sha256(apk.read_bytes()).hexdigest() == report['output']['sha256']
+          assert report['input']['sha256'] == 'bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0'
+          assert report['output']['packageName'] == 'com.kirikira.rednote.fold'
+          assert report['signatureCompatibility']['enabled'] is True
+          assert report['foldLayout']['enabled'] is variant.startswith('fold')
+          print('Reusing verified APK SHA-256:', report['output']['sha256'])
+          PYCACHE
+            apksigner verify output_apks/phone-test.apk
+            echo 'TEST_PACKAGE=com.kirikira.rednote.fold' >> "$GITHUB_ENV"
+            exit 0
+          fi
           curl --fail --location --retry 2 --connect-timeout 20 --max-time 240 --speed-time 30 --speed-limit 1024 \
             'https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21' \
             --output rednote-input/rednote.xapk
@@ -239,6 +267,8 @@ jobs:
             options=()
             if [[ "$TEST_VARIANT" == fold* ]]; then options+=(--fold-layout); fi
             if [[ "$TEST_VARIANT" == *-compat ]]; then options+=(--signature-compat); fi
+            options+=(--decode-dex classes17.dex)
+            if [[ "$TEST_VARIANT" == fold* ]]; then options+=(--decode-dex classes4.dex); fi
             python3 build_rednote.py \
               --input rednote-input/rednote.xapk \
               --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0 \

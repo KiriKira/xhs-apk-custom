@@ -7,6 +7,8 @@ import rednote_phone_test as ui
 
 OTP_RE = re.compile(r"[0-9]{4,8}\Z")
 OTP_PAGE = ("验证码", "短信验证码", "输入验证码", "verification code", "enter code", "one-time code")
+GLOBAL_OTP_FIELD_ID = ":id/editCode"
+GLOBAL_OTP_SLOT_IDS = tuple(f":id/txtCode{i}" for i in range(1, 7))
 OTP_FAILURE = ("验证码错误", "验证码无效", "验证码不正确", "验证码有误", "验证码已过期", "验证码已失效",
                "验证失败", "invalid code", "incorrect code", "code expired", "login failed", "登录失败")
 VERIFY = ("验证", "确认", "下一步", "登录", "登录/注册", "verify", "continue", "next", "submit", "log in", "login")
@@ -47,6 +49,27 @@ def otp_field(root, package):
     if semantic: return None
     only = edittexts(root, package)
     return only[0] if len(only) == 1 else None
+
+def global_otp_form(root, package):
+    """Return (state, field) for the source-confirmed six-slot OTP widget."""
+    own = [n for n in root.iter() if ui.visible(n) and n.attrib.get("package") == package]
+    field_nodes = [n for n in own if n.attrib.get("resource-id", "").endswith(GLOBAL_OTP_FIELD_ID)]
+    slot_nodes = {
+        resource_id: [n for n in own if n.attrib.get("resource-id", "").endswith(resource_id)]
+        for resource_id in GLOBAL_OTP_SLOT_IDS
+    }
+    any_marker = bool(field_nodes or any(slot_nodes.values()))
+    if not any_marker:
+        return "absent", None
+    if (len(field_nodes) != 1 or "edittext" not in field_nodes[0].attrib.get("class", "").lower()
+            or any(len(nodes) != 1 or "textview" not in nodes[0].attrib.get("class", "").lower()
+                   for nodes in slot_nodes.values())):
+        return "invalid", None
+    parents = {child: parent for parent in root.iter() for child in parent}
+    siblings = [field_nodes[0], *(nodes[0] for nodes in slot_nodes.values())]
+    if len({parents.get(node) for node in siblings}) != 1 or parents.get(siblings[0]) is None:
+        return "invalid", None
+    return "confirmed", field_nodes[0]
 
 def result_after_login(root, report, package):
     if (ui.fields(root, ui.PHONE_HINTS, package=package)
@@ -94,23 +117,33 @@ def run(args):
             report["matched_prompt_keywords"], report["result_category"] = failure, "otp_rejected"
             break
         otp_text = ui.matches(texts, OTP_PAGE)
+        global_state, global_field = global_otp_form(root, args.package)
+        if global_state == "invalid":
+            report["result_category"] = "unsupported_ui"
+            break
         if report["otp_entered"]:
             identity_fields = ui.fields(root, (), otp_field_id, otp_field_bounds, args.package)
             field = identity_fields[0] if len(identity_fields) == 1 else None
         else:
-            field = otp_field(root, args.package)
+            semantic_fields = ui.fields(root, ui.OTP_HINTS, package=args.package)
+            if global_state == "confirmed":
+                field = global_field
+            elif otp_text and len(semantic_fields) == 1:
+                field = semantic_fields[0]
+            else:
+                field = None
         report["otp_input_visible"] = field is not None
         if not report["otp_entered"]:
-            if otp_text and field is None:
+            if (otp_text or global_state == "confirmed") and field is None:
                 report["matched_prompt_keywords"] = otp_text[:3]
                 break
-            if not otp_text:
+            if not otp_text and global_state != "confirmed":
                 time.sleep(1); continue
             current = ui.norm(field.attrib.get("text", ""))
             if current and (re.search(r"\d", current) or not any(h in current for h in ui.OTP_HINTS)):
                 break
             report["otp_page_confirmed"] = True
-            report["matched_prompt_keywords"] = otp_text[:3]
+            report["matched_prompt_keywords"] = otp_text[:3] or ["verified six-slot code form"]
             otp_field_id = field.attrib.get("resource-id", "").strip()
             otp_field_bounds = field.attrib.get("bounds", "")
             target = ui.clickable(root, field, args.package)

@@ -863,6 +863,53 @@ def prepare_selective_dex_rebuild(
     }
 
 
+def make_selected_dex_decode_input(
+    baseline_apk: Path, decode_apk: Path, selected_dex_names: set[str]
+) -> dict[str, Any]:
+    """Copy the APK for APKEditor decode while retaining only named DEX entries.
+
+    This is an optimization for a pinned source build. Later selective rebuild
+    still uses the full baseline APK to restore all other DEX payloads.
+    """
+    if not selected_dex_names:
+        raise BuildError("At least one DEX must be selected for a filtered decode")
+    invalid = sorted(
+        name for name in selected_dex_names if not re.fullmatch(r"classes(?:\d+)?\.dex", name)
+    )
+    if invalid:
+        raise BuildError(f"Invalid DEX entries for filtered decode: {invalid}")
+
+    with zipfile.ZipFile(baseline_apk, "r") as source:
+        source_infos = source.infolist()
+        source_names = [info.filename for info in source_infos]
+        if len(source_names) != len(set(source_names)):
+            raise BuildError("Input APK has duplicate ZIP entries; filtered decode is ambiguous")
+        source_dex_names = {
+            name for name in source_names if re.fullmatch(r"classes(?:\d+)?\.dex", name)
+        }
+        missing = sorted(selected_dex_names - source_dex_names)
+        if missing:
+            raise BuildError(f"Selected DEX entries are missing from input APK: {missing}")
+        excluded_dex_names = sorted(source_dex_names - selected_dex_names)
+        with zipfile.ZipFile(decode_apk, "w") as filtered:
+            for info in source_infos:
+                if (
+                    re.fullmatch(r"classes(?:\d+)?\.dex", info.filename)
+                    and info.filename not in selected_dex_names
+                ):
+                    continue
+                with source.open(info, "r") as source_entry, filtered.open(info, "w") as output_entry:
+                    shutil.copyfileobj(source_entry, output_entry, length=1024 * 1024)
+
+    return {
+        "sourceDexEntries": sorted(source_dex_names),
+        "selectedDexEntries": sorted(selected_dex_names),
+        "excludedDexEntries": excluded_dex_names,
+        "nonDexEntryCount": len(source_names) - len(source_dex_names),
+        "selectedDexEntryNamesPreserved": True,
+    }
+
+
 def patch_boolean_method(path: Path, method_name: str, value: bool = True) -> None:
     text = path.read_text(encoding="utf-8")
     method_re = re.compile(
@@ -1265,6 +1312,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "and use V1 signer entry name XINGIN"
         ),
     )
+    parser.add_argument(
+        "--decode-dex",
+        action="append",
+        default=[],
+        metavar="ENTRY",
+        help=(
+            "Optional DEX entry to include in APKEditor decode input (repeatable; "
+            "intended for the pinned Rednote workflow input)"
+        ),
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Output APK path")
     parser.add_argument(
         "--report", type=Path, help="JSON report path (default: sibling rednote-custom-build-report.json)"
@@ -1377,6 +1434,26 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
 
         merge_payload_audit = audit_merged_dex_native(source_apks_for_merge, merge_input)
 
+        decode_input = merge_input
+        if args.decode_dex:
+            decode_input = temporary_root / "selected-dex-decode-input.apk"
+            dex_decode_input_audit = make_selected_dex_decode_input(
+                merge_input,
+                decode_input,
+                set(args.decode_dex),
+            )
+            dex_decode_input_audit["enabled"] = True
+            dex_decode_input_audit["sha256"] = sha256_file(decode_input)
+        else:
+            dex_decode_input_audit = {
+                "enabled": False,
+                "mode": "full APKEditor DEX decode",
+                "sourceDexEntries": sorted(dex_entry_names(merge_input)),
+                "selectedDexEntries": sorted(dex_entry_names(merge_input)),
+                "excludedDexEntries": [],
+                "selectedDexEntryNamesPreserved": True,
+            }
+
         decoded_dir = temporary_root / "decoded"
         decode_args: list[str | Path] = [
             "java",
@@ -1389,7 +1466,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             "-f",
         ]
         decode_args.extend(["-load-dex", "1", "-dex-lib", "jf"])
-        decode_args.extend(["-i", merge_input, "-o", decoded_dir])
+        decode_args.extend(["-i", decode_input, "-o", decoded_dir])
         run_command(decode_args, timeout=3600)
         manifest_path, manifest_tree, manifest_root = find_decoded_manifest(decoded_dir)
         if extension == ".apk":
@@ -1484,6 +1561,14 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 raise
             except Exception as exc:
                 raise BuildError(f"Could not prepare --signature-compat mode: {exc}") from exc
+
+        if args.decode_dex:
+            missing_touched_dex = touched_dex_names - set(args.decode_dex)
+            if missing_touched_dex:
+                raise BuildError(
+                    "--decode-dex must include every DEX modified by the selected build options; "
+                    f"missing={sorted(missing_touched_dex)}"
+                )
 
         dex_rebuild_audit = prepare_selective_dex_rebuild(
             decoded_dir, merge_input, touched_dex_names
@@ -1625,6 +1710,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 ),
             },
             "dexRebuildAudit": dex_rebuild_audit,
+            "dexDecodeInputAudit": dex_decode_input_audit,
             "buildConfiguration": {
                 "dexProcessingLibrary": "jf",
                 "decodeLoadDex": 1,

@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-本次目标是迁移原项目已经能进入登录页的国内版 patch 流程到 REDnote，并测试修改版的手机号登录。此前的 `resigned`、`control`、`fold` 是不含生产签名兼容 helper 的对照组，不能作为完整迁移后的 patched REDnote 结论。用户指出这一遗漏后，新增可选 `--signature-compat`：迁移早期 Application hook、针对新包名生成 Java 查询 helper、使用当前 REDnote 输入证书，并保留生产 `XINGIN` v1 条目名。新变体为 `control-compat` / `fold-compat`。两组均已安装成功，helper 为 `installed`，到达确认 +86 的手机号表单且未检测到崩溃；上一轮未传入手机号而等待超时，本轮 fold-compat 已提交授权手机号并进入验证码页，用户确认收到短信；当前等待验证码验证最终登录。
+本次目标是迁移原项目已经能进入登录页的国内版 patch 流程到 REDnote，并测试修改版的手机号登录。此前的 `resigned`、`control`、`fold` 是不含生产签名兼容 helper 的对照组，不能作为完整迁移后的 patched REDnote 结论。用户指出这一遗漏后，新增可选 `--signature-compat`：迁移早期 Application hook、针对新包名生成 Java 查询 helper、使用当前 REDnote 输入证书，并保留生产 `XINGIN` v1 条目名。新变体为 `control-compat` / `fold-compat`。两组均已安装成功，helper 为 `installed`，到达确认 +86 的手机号表单且未检测到崩溃；上一轮未传入手机号而等待超时，本轮 fold-compat 已提交授权手机号并进入验证码页，用户确认收到短信。用户明确要求停在此步，后续验证已停止，最终登录未测试。
 
 国内 production [build run 35478448978](https://github.com/KiriKira/xhs-apk-custom/actions/runs/35478448978) 使用 Coolapk `vc=9334801`，`build_xhs.py` 注入 `attachBaseContext` helper 并以 `XINGIN` 签名条目构建；其已验证构建步骤成功。国内 helper 的证书指纹为 `f375f0f6af7c94c364b35cd6f6a66d64aefae66e32f935b48773c0faad04c121`，本次 REDnote 输入为 `dbf2ddfe68dc6c3d7bdbd1c70aae13993f50fa99b51d6f0c668a284ee9e6fdcd`，因此不能直接照搬证书常量。用户提供的国内修改版能到登录页但被风控，作为用户设备观察记录；CI 构建成功本身不证明登录成功。
 
@@ -61,7 +61,7 @@ bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0
 | control-compat | [run 37621657993](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37621657993)：PID 4053；helper installed；+86 手机号表单；未检测到崩溃。 | 该轮手机号传入等待超时，未提交号码。 |
 | fold-compat | [run 37621661801](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37621661801)：PID 4312；helper installed；+86 手机号表单；未检测到崩溃。 | 该轮手机号传入等待超时；[run 37636029064](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37636029064) 已确认 +86、输入授权手机号并点击 Next，进入验证码页；用户确认收到短信。尚未提交 OTP 或确认最终登录。 |
 
-同一 REDnote 输入和克隆包名下，新增生产签名兼容处理后恢复到登录表单，说明此前缺少该处理的对照结果不能代表完整 patched 版。fold-compat 的实际手机号提交已进入验证码页且用户确认收到短信，未检测到环境不安全提示；最终登录结果仍待 OTP 验证。
+同一 REDnote 输入和克隆包名下，新增生产签名兼容处理后恢复到登录表单，说明此前缺少该处理的对照结果不能代表完整 patched 版。fold-compat 的实际手机号提交已进入验证码页且用户确认收到短信，未检测到环境不安全提示。随后 OTP helper 因国际版页面标题未匹配而在输入验证码前超时，最终记录为 `otp_entered=false`、`verify_clicked=false`、`logged_in=false`；workflow 完成诊断保存不等于验证码通过。用户要求停止后续验证，因此最终登录未测试。这版的生产构建已独立接入 main 的 `build-rednote.yml`，包名和签名与此成功配置相同。
 
 原包名重签组与两个克隆组在原生 ARM 中均发生同类退出，说明包名改写不是该退出的必要条件；control 与 fold 结果相同，也不支持 fold gate 为必要原因。当前仍无法区分实际 signer、SourceStamp/签名元数据、APK 完整性检查或其他启动差异。`SIGNALED` / status 6 只表明信号退出，缺少 native frames 和 abort message 时不应给出根因。
 

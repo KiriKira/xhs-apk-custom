@@ -70,7 +70,7 @@ The earlier non-original runs omitted the production helper; separate
 `control-compat` / `fold-compat` runs test the complete migrated patch path and
 both reached the phone form without a detected crash. `fold-compat` submitted an
 authorized +86 number, reached the code page, and the user confirmed receiving
-the SMS; final login still requires OTP verification. See the
+the SMS. The owner requested stopping here; final login was not tested. See the
 [runtime evidence](docs/ANDROID_VM_TEST.md) for the limits of these results.
 
 With Java 21, APKEditor in `bins/apkeditor.jar`, Python 3.10+, and Android build-tools
