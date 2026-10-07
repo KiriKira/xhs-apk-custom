@@ -153,23 +153,40 @@ jobs:
           waydroid status
 
           waydroid_ip=""
+          adb_ready=false
           for attempt in $(seq 1 60); do
             if ! kill -0 "$supervisor_pid" 2>/dev/null; then break; fi
             status_output="$(waydroid status 2>/dev/null || true)"
+            echo "Waydroid status poll $attempt:"
+            echo "$status_output"
             waydroid_ip="$(echo "$status_output" | awk -F: '/IP address:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
-            if [ -n "$waydroid_ip" ] && [ "$waydroid_ip" != "None" ]; then break; fi
+            if WAYDROID_IP="$waydroid_ip" python3 - <<'PYIP'
+          import ipaddress, os, sys
+          try:
+              address = ipaddress.ip_address(os.environ.get("WAYDROID_IP", ""))
+              if not isinstance(address, ipaddress.IPv4Address):
+                  raise ValueError("IPv4 required")
+          except ValueError:
+              sys.exit(1)
+          PYIP
+            then
+              test_serial="$waydroid_ip:5555"
+              echo "Waydroid reported a valid IPv4 address: $waydroid_ip"
+              adb connect "$test_serial" || true
+              device_state="$(timeout 10 adb -s "$test_serial" get-state 2>/dev/null || true)"
+              if [ "$device_state" = device ]; then adb_ready=true; break; fi
+            fi
             sleep 2
           done
-          if [ -z "$waydroid_ip" ] || [ "$waydroid_ip" = "None" ]; then
-            echo "Waydroid did not report a container IP"
+          if [ "$adb_ready" != true ]; then
+            echo "Waydroid did not report a valid IPv4 address and connected ADB device"
             waydroid status || true
             exit 1
           fi
 
-          adb connect "$waydroid_ip:5555"
           test_serial="$waydroid_ip:5555"
           echo "TEST_SERIAL=$test_serial" >> "$GITHUB_ENV"
-          timeout 60 adb -s "$test_serial" wait-for-device
+          echo "Waydroid serial ready: $test_serial"
           booted=""
           for attempt in $(seq 1 60); do
             booted="$(timeout 10 adb -s "$test_serial" shell getprop sys.boot_completed | tr -d '\r' || true)"
