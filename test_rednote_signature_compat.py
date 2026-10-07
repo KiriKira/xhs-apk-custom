@@ -7,11 +7,12 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from build_rednote import (
+    BuildError,
     compare_payload_entries,
     make_minimal_candidate,
     resolve_manifest_application_class,
 )
-from rednote_signature_compat import patch_application_startup
+from rednote_signature_compat import next_dex_name, patch_application_startup
 
 
 class StartupHookTests(unittest.TestCase):
@@ -67,7 +68,9 @@ class SignatureCompatArchiveTests(unittest.TestCase):
             archive.writestr("classes17.dex", b"rebuilt-touched-dex")
 
     def test_helper_dex_is_appended_stored_and_audited_as_the_only_new_payload(self):
-        added = {"classes23.dex": self.helper}
+        helper_name = next_dex_name(self.baseline)
+        self.assertEqual(helper_name, "classes18.dex")
+        added = {helper_name: self.helper}
         cleanup = make_minimal_candidate(
             self.baseline,
             self.rebuilt,
@@ -75,22 +78,22 @@ class SignatureCompatArchiveTests(unittest.TestCase):
             self.candidate,
             added_entries=added,
         )
-        self.assertEqual(cleanup["addedPayloadEntries"], ["classes23.dex"])
+        self.assertEqual(cleanup["addedPayloadEntries"], [helper_name])
         with zipfile.ZipFile(self.candidate) as archive:
-            self.assertEqual(archive.read("classes23.dex"), b"helper-dex-payload")
-            self.assertEqual(archive.getinfo("classes23.dex").compress_type, zipfile.ZIP_STORED)
+            self.assertEqual(archive.read(helper_name), b"helper-dex-payload")
+            self.assertEqual(archive.getinfo(helper_name).compress_type, zipfile.ZIP_STORED)
 
         audit = compare_payload_entries(
             self.baseline,
             self.candidate,
             {"AndroidManifest.xml", "classes17.dex"},
-            added_entries={"classes23.dex"},
+            added_entries={helper_name},
         )
         self.assertEqual(
             audit["addedPayloadEntries"],
             [
                 {
-                    "entry": "classes23.dex",
+                    "entry": helper_name,
                     "sha256": hashlib.sha256(b"helper-dex-payload").hexdigest(),
                 }
             ],
@@ -113,16 +116,16 @@ class SignatureCompatArchiveTests(unittest.TestCase):
             self.rebuilt,
             {"AndroidManifest.xml", "classes17.dex"},
             self.candidate,
-            added_entries={"classes23.dex": self.helper},
+            added_entries={"classes18.dex": self.helper},
         )
         with zipfile.ZipFile(self.candidate, "a") as archive:
-            archive.writestr("classes24.dex", b"unexpected-dex")
-        with self.assertRaisesRegex(Exception, "Payload entry set changed unexpectedly"):
+            archive.writestr("classes19.dex", b"unexpected-dex")
+        with self.assertRaisesRegex(BuildError, "Payload entry set changed unexpectedly"):
             compare_payload_entries(
                 self.baseline,
                 self.candidate,
                 {"AndroidManifest.xml", "classes17.dex"},
-                added_entries={"classes23.dex"},
+                added_entries={"classes18.dex"},
             )
 
 
