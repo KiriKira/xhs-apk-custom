@@ -2,7 +2,7 @@
 
 Custom Xiaohongshu (小红书) Android build for foldable-device layout behavior.
 
-The active build now targets one device-tested configuration only.
+The domestic build and the REDnote build have independent workflows and releases.
 
 ## Current release configuration
 
@@ -26,7 +26,7 @@ No `Build.MODEL`, `Build.MANUFACTURER`, or region spoofing is used.
 
 ## Output
 
-The only production artifact is:
+The domestic production artifact is:
 
 `xhs-fold8-custom.apk`
 
@@ -35,6 +35,16 @@ Latest stable release: https://github.com/KiriKira/xhs-apk-custom/releases/tag/v
 `.github/workflows/build-xhs.yml` builds and verifies that APK on relevant `main` changes or manual dispatch.
 
 The persistent test signing key is kept in `ks_pkcs12.keystore` so future custom builds retain the same signing identity. It is a public test key and must not be treated as a secret.
+
+## REDnote build
+
+The APKPure REDnote 9.48.1 base is built as `rednote-fold-custom.apk`, package `com.kirikira.rednote.fold`, using the same signing key. It can coexist with the domestic `com.xingin.xhs` build.
+
+Release: https://github.com/KiriKira/xhs-apk-custom/releases/tag/rednote-v9.48.1-1
+
+`.github/workflows/build-rednote.yml` builds this configuration separately and can publish a new REDnote release on manual dispatch or a `rednote-v*` tag push. It preserves the existing domestic release and assets.
+
+The patched REDnote build reached the SMS verification page in ARM Waydroid, and the account owner confirmed receipt of the SMS. Final verification/login was not tested at the owner's request. See [source, patches and validation](docs/REDNOTE_RELEASE.md).
 
 ## Implementation
 

@@ -1,0 +1,215 @@
+name: Build and Release REDnote Fold Custom
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "rednote-v*"
+    paths:
+      - "build_rednote.py"
+      - "rednote_signature_compat.py"
+      - "test_build_rednote.py"
+      - "test_rednote_signature_compat.py"
+      - "requirements.txt"
+      - "ks_pkcs12.keystore"
+      - "tools/verify_rednote_release.py"
+      - "tools/verify_rednote_signature_compat.py"
+      - "tools/verify_rednote_process_gate.py"
+      - "tools/verify_fold_dex.py"
+      - ".github/workflows/build-rednote.yml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this build as a GitHub Release
+        type: boolean
+        required: true
+        default: true
+      tag:
+        description: Release tag to create or use
+        type: string
+        required: true
+        default: rednote-v9.48.1-1
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install Android SDK tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" "build-tools;35.0.0" "platforms;android-35"
+
+          BUILD_TOOLS="$SDK_ROOT/build-tools/35.0.0"
+          PLATFORM_JAR="$SDK_ROOT/platforms/android-35/android.jar"
+          for tool in aapt2 zipalign apksigner d8; do
+            test -x "$BUILD_TOOLS/$tool"
+          done
+          test -f "$PLATFORM_JAR"
+
+          {
+            echo "ANDROID_HOME=$SDK_ROOT"
+            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
+            echo "ANDROID_JAR=$PLATFORM_JAR"
+            echo "AAPT2=$BUILD_TOOLS/aapt2"
+            echo "ZIPALIGN=$BUILD_TOOLS/zipalign"
+            echo "APKSIGNER=$BUILD_TOOLS/apksigner"
+            echo "D8=$BUILD_TOOLS/d8"
+          } >> "$GITHUB_ENV"
+          echo "$BUILD_TOOLS" >> "$GITHUB_PATH"
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run Rednote unit tests
+        run: python -m unittest -v test_build_rednote test_rednote_signature_compat
+
+      - name: Download and verify pinned inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p input bins
+          XAPK="input/rednote-9.48.1-9481803.xapk"
+          APKEDITOR="bins/apkeditor.jar"
+          curl --fail --location --retry 3 \
+            "https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21" \
+            --output "$XAPK"
+          echo "bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0  $XAPK" | sha256sum --check --status
+          curl --fail --location --retry 3 \
+            "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar" \
+            --output "$APKEDITOR"
+          echo "a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67  $APKEDITOR" | sha256sum --check --status
+
+      - name: Build signed REDnote clone
+        env:
+          KEYSTORE_PASSWORD: "123456789"
+          KEY_PASSWORD: "123456789"
+          KEY_ALIAS: jhc
+        run: >-
+          python build_rednote.py
+          --input input/rednote-9.48.1-9481803.xapk
+          --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0
+          --source "APKPure XAPK com.xingin.xhs versionCode 9481803"
+          --application-id com.kirikira.rednote.fold
+          --fold-layout
+          --signature-compat
+          --decode-dex classes17.dex
+          --decode-dex classes4.dex
+          --output output_apks/rednote-fold-custom.apk
+          --report output_apks/rednote-fold-build-report.json
+          --keystore ks_pkcs12.keystore
+          --key-alias jhc
+
+      - name: Verify APK, clone metadata, and signing certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="output_apks/rednote-fold-custom.apk"
+          REPORT="output_apks/rednote-fold-build-report.json"
+          apksigner verify --verbose --print-certs "$APK" | tee /tmp/rednote-apksigner.txt
+          grep -F "Signer #1 certificate SHA-256 digest: 637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4" /tmp/rednote-apksigner.txt
+          zipalign -c -P 16 -v 4 "$APK"
+          aapt2 dump badging "$APK" | grep -F "package: name='com.kirikira.rednote.fold'"
+          unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.SF'
+          unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.RSA'
+          python tools/verify_rednote_release.py "$APK" "$REPORT"
+          (
+            cd output_apks
+            sha256sum rednote-fold-custom.apk rednote-fold-build-report.json > SHA256SUMS
+          )
+          mkdir -p release-assets
+          cp "$APK" "$REPORT" output_apks/SHA256SUMS release-assets/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: rednote-fold-custom
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/rednote-v')) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: rednote-fold-custom
+          path: release-assets
+
+      - name: Create release without replacing an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            tag="$DISPATCH_TAG"
+          fi
+          if [[ ! "$tag" =~ ^rednote-v[0-9]+(\.[0-9]+){2}-[0-9]+$ ]]; then
+            echo "Refusing invalid REDnote release tag: $tag" >&2
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; refusing to replace its assets." >&2
+            exit 1
+          fi
+          (
+            cd release-assets
+            sha256sum --check SHA256SUMS
+          )
+          cat > release-notes.md <<'NOTES'
+          Custom REDnote fold build from APKPure XAPK 9.48.1 (versionCode 9481803).
+
+          Package `com.kirikira.rednote.fold` can be installed alongside the domestic app package `com.xingin.xhs`.
+
+          Patches: both fold/Pad layout gates, early Java PackageInfo/SigningInfo signature compatibility using the REDnote source certificate, XINGIN V1 signer entry name, cloned main-process predicate, and isolated manifest permissions/provider authorities.
+
+          A build with this configuration reached the SMS verification page in ARM Waydroid and the account owner confirmed receipt of the SMS. Final verification/login was not tested, as requested by the account owner.
+
+          Signed with `ks_pkcs12.keystore`, alias `jhc`.
+          APK signer SHA-256: `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4` (same as the domestic v1.0.0 release).
+          NOTES
+          gh release create "$tag" \
+            release-assets/rednote-fold-custom.apk \
+            release-assets/SHA256SUMS \
+            release-assets/rednote-fold-build-report.json \
+            --title "$tag" \
+            --notes-file release-notes.md \
+            --latest=false \
+            --target "$GITHUB_SHA"
