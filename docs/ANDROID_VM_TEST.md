@@ -1,103 +1,55 @@
-# Android Emulator 运行与 APK 安装记录
+# Android VM 安装与运行记录
 
-日期：2026-10-07
+更新日期：2026-10-07
 
-## 环境与启动方式
+## 当前测试状态
 
-使用 Android Emulator 37.2.12（build 16428233）和 Android 11 / API 30 Google APIs x86_64 system image rev 16。AVD 名称为 `rednote-api30`，配置位于 `/workspace/android-sdk/avds/rednote-api30.avd`；guest 分配 2 个 vCPU、2048 MiB RAM，屏幕为 720×1280。ADB serial 为 `emulator-5554`。
+当前测试使用 APKPure 分发的 REDnote `9.48.1` XAPK（SHA-256 `bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0`），不是从 Google Play 直接导出的 APK。XAPK 原始包、两个 split 和构建报告的来源信息见仓库 `output_apks/*build-report.json`。
 
-本环境没有可用 KVM：在 Docker privileged 探测中仍未发现 `/dev/kvm`，CPU 未暴露 `vmx` 或 `svm` 标志；`emulator -accel-check` 报告 CPU 不支持 vmx 或 svm。因此这个 AVD 使用 QEMU TCG 软件模拟，不能描述为 KVM 加速。
+API 35 Google APIs x86_64 KVM runner 已安装并启动当前的三个变体。原始包、换包名对照版和布局版都显示隐私协议首屏，PID 分别为 4357、4732、5090，20 秒观察未检测到崩溃。主进程初始化修复 `ae7aef4` 已重建到当前本地 APK。较早 API 30 深度预览的修复后对照版虽越过 NPE 并显示隐私协议，随后仍发生带 `libndk_translation.so` 栈帧的 `SIGABRT`。手机号、短信验证码和实际登录均未测试，当前结果不能判断服务端是否会触发“环境不安全”。
 
-重启同一 AVD 的命令：
+| 变体 | 安装与运行结果 | 证据 |
+| --- | --- | --- |
+| 原始 APKPure XAPK（base + ARM64 + xxhdpi split，`com.xingin.xhs`） | API 35 KVM smoke：split 安装成功并启动至隐私协议，短观察未见崩溃。更深预览同意隐私并点登录后 native `SIGABRT`，栈中包含 `libndk_translation.so`。 | [run 37598983597](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37598983597) |
+| 原始 APKPure XAPK（`com.xingin.xhs`） | API 30 预览到隐私协议后 native `SIGSEGV`；本地预览记录没有可用 native backtrace。它不是登录风控提示。 | 本地预览记录 |
+| 换包名对照版旧 APK（`com.kirikira.rednote.fold`） | 修复前 API 35 启动请求被接受后发生 `XhsActivity.getResources()` 的 Java NPE。此旧故障已由 `ae7aef4` 修复。 | [run 37599034582](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37599034582) |
+| 当前三个变体 | API 35 run 37601174448 中均安装成功并显示隐私协议首屏；PID 4357 / 4732 / 5090，20 秒观察无崩溃。 | [run 37601174448](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37601174448) |
+| 换包名对照版旧 APK | API 30 深度预览记录 `XhsActivity.getResources()` 相关 NPE；这是修复前结果。 | 本地预览记录 |
+| 主进程修复后的换包名对照版 | 较早 API 30 run 37601175067 可同意隐私协议，未再出现 NPE；随后 native `SIGABRT`，状态码 6，native 栈包含 `libndk_translation.so`。 | [run 37601175067](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37601175067) |
 
-```sh
-export ANDROID_SDK_ROOT=/workspace/android-sdk
-export PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
-ANDROID_I_WANT_MY_TCG=yes "$ANDROID_SDK_ROOT/emulator/emulator" \
-  -avd rednote-api30 -accel off -no-window -no-audio -no-boot-anim \
-  -gpu swiftshader -no-snapshot
-```
+未修改 APK 在 API 35 的短时 smoke 中未崩溃，与更深预览中的 native crash 是不同观察阶段，不应合并成“稳定运行”。API 35 镜像声明 ABI `x86_64,arm64-v8a` 并带 `libndk_translation.so`；native 栈包含该库只能说明翻译路径出现于崩溃调用栈，不能单独证明它是根因。
 
-Emulator 37.2.12 使用 `-gpu swiftshader`。这里不使用旧的 `swiftshader_indirect` 参数。`ANDROID_I_WANT_MY_TCG=yes` 是在关闭加速、改用 TCG 时所需的显式环境变量。TCG 模式官方标注为很慢；关闭窗口、音频和快照不会消除 CPU 模拟成本。
+## 克隆版启动兼容性
 
-等待 Android 完成启动后再安装应用。ADB 显示 `device` 只说明 ADB 已连接，不能代替 `sys.boot_completed=1`：
+APKManifest 的重复 `{applicationId}.gcm.permission.C2D_MESSAGE` 已修复。当前三个 APK 均安装成功，所以较早记录的 `INSTALL_FAILED_DUPLICATE_PERMISSION` 已过时。
 
-```sh
-adb -s emulator-5554 get-state
-adb -s emulator-5554 shell getprop sys.boot_completed
-```
+应用 `ddc/a` 中的主进程名硬编码检查曾导致改包名后跳过 `Application` 初始化，随后 `XhsActivity.getResources()` 抛 NPE。该兼容修复已提交并进入当前 APK，run 37601174448 确认两个克隆变体启动至隐私协议且 20 秒无崩溃。较早 API 30 run 37601175067 随后出现的 native abort 是独立待查故障，仍发生在登录前。ActivityManager 返回启动成功只表示启动请求被接受，不代表应用进程健康。
 
-API 30 的后续观察：首次启动中 `system_server` PID 534 退出，随后出现新 PID 1285；SystemUI 和 PermissionController 记录 `DeadSystemException`。截图显示 `System UI isn't responding`。虽然稍后 `sys.boot_completed` 报告 `1`，再次检查时 `package` 与 `activity` 服务均不存在，因此不能把这个属性单独视为可测试的系统。
+当前 [`output_apks/SHA256SUMS`](../output_apks/SHA256SUMS) 是已重建并包含 `ae7aef4` 的产物哈希：
 
-原始三个 split 的 `adb install-multiple` 已实际尝试，返回 `Failure calling service package: Broken pipe (32)`；没有确认安装成功，未启动 REDnote。保存的启动日志可证实 PackageManager 初始化约 91 秒、Watchdog `WAITED_HALF` 及长时间线程竞争，但缺少系统退出时刻的直接根因日志，不能写成已证实的 Watchdog kill、应用崩溃或风控拒绝。
+| 文件 | 包名 | SHA-256 |
+| --- | --- | --- |
+| `rednote-9.48.1-renamed-control.apk` | `com.kirikira.rednote.fold` | `46c7c0203dfff70c4b12dcc0ead68a1155efe26dc98e2442e046d7b0c7ae9db8` |
+| `rednote-9.48.1-fold-custom.apk` | `com.kirikira.rednote.fold` | `1e7b5f7abb45b7af92d8bee56d661e6ef09fc89fd3cc0cf0d841600b3b07669c` |
 
-随后已停止 API 30，改为启动 Android 15 / API 35 Google APIs x86_64 rev 9。官方归档 SHA-1 `0103e6dab21290c4b9d16550a3ce99476f884eef` 校验通过，镜像 build.prop 声明 `x86_64,arm64-v8a`、`libndk_translation.so`。新 AVD 为 `rednote-api35`，ADB serial `emulator-5556`，命令行分配 1 vCPU、3072 MiB RAM；仍使用 `-accel off`，不是 KVM。最终运行状态在后文补记。
+构建报告验证对照版仅改 `AndroidManifest.xml` 与 `classes17.dex`；布局版改这两项和 `classes4.dex`。独立 payload 审计确认原始 1,985 条目中其他条目哈希一致；编译 gate 检查通过，8 项单元测试通过。
 
-## ARM64 ABI 检查
+## KVM 与 ARM Waydroid
 
-启动中的 API 30 x86_64 Google APIs 镜像已经报告以下 ABI：
+API 35 x86_64 测试使用 Android Emulator 37.2.12、Google APIs system image 和可用 KVM。镜像提供 `libndk_translation.so` 并声明 ARM64 ABI，但这是 **x86_64 guest 中的 ARM native bridge**，不等同于原生 ARM Android 环境。
 
-```text
-x86_64,x86,arm64-v8a,armeabi-v7a,armeabi
-```
+- 旧 run [37580918798](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37580918798) 验证 hosted runner 的 `/dev/kvm` 可用，并成功启动 API 35 emulator。它没有完成 APK 下载或安装。
+- 旧 smoke run [37581654651](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37581654651) 的克隆安装曾因重复 custom permission 失败；该问题已在当前构建修复。该 run 的旧 APK 与哈希不代表现在的产物。
+- [模块探测 run 37585019547](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37585019547) 已确认官方 extras 提供的 ARM/x86 Binder 模块可用。这验证了模块侧条件，不证明目标应用已在 Waydroid 中安装或启动。
+- 原生 ARM Waydroid KVM run [37601728448](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37601728448) 因 LXC 缺少 `XDG_RUNTIME_DIR/pulse/native` 挂载而失败，没有完成应用测试。
+- 补齐 PulseAudio 后的第三轮 [37602265414](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37602265414) 已实际到达 Android user 0 ready；LXC 状态 `RUNNING`，地址 `192.168.240.112`。这次未测试 APK，是因为脚本过早将未知地址 `UNKNOWN` 拼成 `UNKNOWN:5555` 并超时，不是 Waydroid 容器未启动。
+- IP 发现修复 commit `b56cbad` 的第四轮 [37603857949](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37603857949) 已取消。日志显示 Android ready 且地址为 `192.168.240.112`；首次 `adb connect` 明确报告 `failed to authenticate`，后续返回 already connected，但 `adb get-state` 未变为 `device`。该次运行未执行 `show-full-ui`，随后 LXC 进入 `FROZEN`。这是自建 Android 的 ADB 主机认证和窗口生命周期问题，未安装或启动 APK。
+- [37605217096](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37605217096) 成功完成 native ARM QEMU fold APK 构建，但旧连接脚本的 Android 初始化步骤已取消，APK 安装和应用测试均跳过。接下来先通过 `show-full-ui` 与 ADB 主机密钥信任流程确认 `adb get-state=device`，再运行 APK smoke；当前没有 native ARM 应用运行证据。
 
-`ro.dalvik.vm.native.bridge` 为 `libndk_translation.so`，且 `/system/lib64/libndk_translation.so` 文件存在。这表明 system image 声明 ARM64 ABI 并带有 ARM native bridge；它尚不能替代目标 APK 的实际安装、进程启动及 ARM64 `.so` 加载检查。
+此前在本机用 TCG 软件模拟的 API 30/35 尝试有系统服务缺失或首次启动过慢的问题，不能代表上述 hosted KVM 结果，也不能作为当前应用测试结论。此前的 `INSTALL_FAILED_DUPLICATE_PERMISSION` 和克隆启动 NPE 均已修复；旧 NPE 记录不代表当前 APK。
 
-启动就绪后，可复核：
+## 登录与风控测试边界
 
-```sh
-adb -s emulator-5554 shell getprop ro.product.cpu.abilist
-adb -s emulator-5554 shell getprop ro.product.cpu.abilist64
-adb -s emulator-5554 shell getprop ro.dalvik.vm.native.bridge
-adb -s emulator-5554 shell ls -l /system/lib64/libndk_translation.so
-```
+所有当前预览记录都显示 `phone_input_performed=false`、`sms_requested=false`，且未显示手机号表单。未输入手机号、未请求验证码、未提交 OTP、未完成登录。20 秒 smoke 只到隐私协议首屏；较早 deep preview 的 native crash 也发生在手机号页前。`timeout` 表示预览流程没有达到目标状态，不表示服务器拒绝登录。
 
-## 三个 APK 变体
-
-源文件来自 APKPure 分发的 REDnote 9.48.1 XAPK，不是从 Google Play 直接导出的安装包。原始 XAPK 拆出的三个 APK 为 base、ARM64 split 和 xxhdpi split；合并构建的两个输出 APK 使用相同克隆包名，所以比较它们时应先卸载前一个。
-
-| 变体 | 文件 | 安装包名 | 安装方式 |
-|---|---|---|---|
-| 原始 APKPure XAPK 分包 | `/workspace/rednote-input/verify/com.xingin.xhs.apk`、`config.arm64_v8a.apk`、`config.xxhdpi.apk` | `com.xingin.xhs` | `adb install-multiple`，三个分包一起安装 |
-| 换包名对照版 | `/workspace/xhs-apk-custom/output_apks/rednote-9.48.1-renamed-control.apk` | `com.kirikira.rednote.fold` | 单 APK 安装 |
-| 折叠布局补丁版 | `/workspace/xhs-apk-custom/output_apks/rednote-9.48.1-fold-custom.apk` | `com.kirikira.rednote.fold` | 单 APK 安装 |
-
-以下命令用于在 AVD 启动完成后依次安装并尝试启动各变体。它们是复现步骤，不表示这些安装或 UI 启动已经执行成功。原始应用与克隆版包名不同；两个克隆版包名相同，切换克隆版时先卸载，避免保留前一个变体的数据：
-
-```sh
-ADB=/workspace/android-sdk/platform-tools/adb
-SERIAL=emulator-5554
-
-# 1. 原始 APKPure XAPK 的 base 与两个 split
-"$ADB" -s "$SERIAL" install-multiple -r \
-  /workspace/rednote-input/verify/com.xingin.xhs.apk \
-  /workspace/rednote-input/verify/config.arm64_v8a.apk \
-  /workspace/rednote-input/verify/config.xxhdpi.apk
-"$ADB" -s "$SERIAL" shell monkey -p com.xingin.xhs 1
-
-# 2. 仅改包名的对照版
-"$ADB" -s "$SERIAL" uninstall com.kirikira.rednote.fold
-"$ADB" -s "$SERIAL" install \
-  /workspace/xhs-apk-custom/output_apks/rednote-9.48.1-renamed-control.apk
-"$ADB" -s "$SERIAL" shell monkey -p com.kirikira.rednote.fold 1
-
-# 3. 布局补丁版
-"$ADB" -s "$SERIAL" uninstall com.kirikira.rednote.fold
-"$ADB" -s "$SERIAL" install \
-  /workspace/xhs-apk-custom/output_apks/rednote-9.48.1-fold-custom.apk
-"$ADB" -s "$SERIAL" shell monkey -p com.kirikira.rednote.fold 1
-```
-
-如果克隆版的 `uninstall` 提示包尚未安装，可在首次安装时跳过该行。切换回原始变体前，也应先确认原始包是否已安装；若需要干净比较，可先卸载 `com.xingin.xhs` 再重新执行 `install-multiple`。安装成功后可用 `adb -s emulator-5554 shell pm path <package>` 确认 Package Manager 已登记 APK。
-
-## 当前测试边界
-
-本记录确认了 Emulator/AVD 配置、ADB 连接、API 30 镜像的 ARM64 ABI 声明及 native bridge 文件存在。记录撰写时系统仍未完成首次启动，因此尚无这三个 APK 的安装、应用进程启动、界面显示或登录结果。未输入或记录手机号、短信验证码或账号凭据；未修改系统属性或设备标识以隐藏模拟器。TCG 环境的应用运行表现也不能代表真实 ARM64 设备的性能或服务端处理结果。
-
-## GitHub Actions KVM 对照
-
-用户进一步授权在免费的 GitHub Actions runner 上测试。新增 `.github/workflows/rednote-kvm-test.yml`，仅使用公开仓库的标准 `ubuntu-24.04` runner，不使用 larger runner、不上传 artifact、不存储 cache。独立分支 `codex/rednote-kvm-test` 的 push 触发测试，不改动生产构建 workflow。
-
-该流程要求真实存在的 `/dev/kvm`，调用 Emulator `-accel-check`，并使用 `-accel on` 启动 Android 15 Google APIs x86_64 镜像。构建先于虚拟机启动，避免二者同时占用 JVM/Android 内存。输入 XAPK 和 APKEditor 都固定 SHA-256，重新构建换包名对照及布局版本后，由 `tools/rednote_emulator_smoke.py` 依次卸载、安装、启动三个变体。
-
-本轮自动化仅收集无账号状态的截图、UI XML、安装/启动状态和简短崩溃摘要，输出到 job 日志；没有加入手机号或登录凭据。该结果必须等实际 job 完成后核对，不能从 workflow 文件推断安装或运行成功。Google APIs 镜像也不等于通过 Play Store 安装的真实设备环境。
+因此当前不能判断 REDnote 是否对这些环境提示“不安全”，也不能把本机软件 VM 的故障、native bridge 崩溃或改包启动异常称为风控。下一步先修复并验证原生 ARM Waydroid 的 UI 启动与 ADB 连接，再确认 APK 是否能到达登录页；登录结果需要单独记录明确的页面提示和发生阶段。

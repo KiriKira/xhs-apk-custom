@@ -56,8 +56,12 @@ The downloaded diagnostic input is APKPure REDnote 9.48.1 / 9481803, ARM64. Goog
 Play also uses `com.xingin.xhs`; a matching package name alone does not establish
 that two distribution channels deliver identical files. See
 [the investigation](docs/REDNOTE_INVESTIGATION.md) and
-[runtime prerequisites and test matrix](docs/REDNOTE_RUNTIME.md). No installation
-or login test has been completed in this workspace.
+[runtime prerequisites and test matrix](docs/REDNOTE_RUNTIME.md). Hosted API 35
+KVM tests installed all three variants and reached the privacy screen without a
+crash during a 20-second observation. Deeper x86 previews encountered native
+crashes before the phone form; native ARM64 Waydroid testing is ongoing. No phone
+number, SMS request, OTP submission or login has been tested yet. See the
+[runtime evidence](docs/ANDROID_VM_TEST.md) for the limits of these results.
 
 With Java 21, APKEditor in `bins/apkeditor.jar`, Python 3.10+, and Android build-tools
 (`aapt2`, `zipalign`, `apksigner`) available, build the diagnostic layout variant:

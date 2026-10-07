@@ -283,6 +283,40 @@ jobs:
           echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
           timeout 10 waydroid status || true
 
+          # This is our fresh VM: trust our own debugging host without disabling
+          # Android ADB authentication or changing any app/device identity.
+          debug_key="$RUNNER_TEMP/waydroid-host-adbkey"
+          adb keygen "$debug_key"
+          chmod 600 "$debug_key"
+          export ADB_VENDOR_KEYS="$debug_key"
+          echo "ADB_VENDOR_KEYS=$ADB_VENDOR_KEYS" >> "$GITHUB_ENV"
+          adb start-server
+          android_ready=false
+          shell_deadline=$((SECONDS + 240))
+          while ((SECONDS < shell_deadline)); do
+            sudo timeout 5 lxc-unfreeze -P /var/lib/waydroid/lxc -n waydroid >/dev/null 2>&1 || true
+            shell_boot="$(sudo timeout 8 waydroid shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            echo "Android shell boot_completed=${shell_boot:-<empty>}"
+            if [ "$shell_boot" = 1 ]; then android_ready=true; break; fi
+            sleep 3
+          done
+          test "$android_ready" = true
+          nohup setsid waydroid show-full-ui > "$RUNNER_TEMP/waydroid-full-ui.log" 2>&1 </dev/null &
+          echo "$!" > "$RUNNER_TEMP/waydroid-full-ui.pid"
+          sudo timeout 5 lxc-unfreeze -P /var/lib/waydroid/lxc -n waydroid >/dev/null 2>&1 || true
+          sudo timeout 20 waydroid shell sh -c '
+            set -eu
+            mkdir -p /data/misc/adb
+            cat > /data/misc/adb/adb_keys
+            chown 1000:2000 /data/misc/adb/adb_keys
+            chmod 640 /data/misc/adb/adb_keys
+            restorecon /data/misc/adb/adb_keys
+            test "$(getprop ro.adb.secure)" = 1
+            setprop ctl.restart adbd
+          ' < "$debug_key.pub"
+          echo "Trusted this VM debugging host; ro.adb.secure remains enabled"
+          sleep 3
+
           waydroid_ip=""
           adb_ready=false
           is_ipv4() {
@@ -301,6 +335,7 @@ jobs:
           while ((SECONDS < adb_deadline)); do
             attempt=$((attempt + 1))
             if ! kill -0 "$supervisor_pid" 2>/dev/null; then break; fi
+            sudo timeout 5 lxc-unfreeze -P /var/lib/waydroid/lxc -n waydroid >/dev/null 2>&1 || true
             status_output="$(timeout 10 waydroid status 2>/dev/null || true)"
             echo "Waydroid status poll $attempt:"
             echo "$status_output"
@@ -314,8 +349,11 @@ jobs:
             if is_ipv4 "$waydroid_ip"; then
               test_serial="$waydroid_ip:5555"
               echo "Waydroid container IPv4 address: $waydroid_ip"
+              timeout 3 adb disconnect "$test_serial" || true
               timeout 8 adb connect "$test_serial" || true
-              device_state="$(timeout 5 adb -s "$test_serial" get-state 2>/dev/null || true)"
+              timeout 5 adb devices -l || true
+              device_state="$(timeout 5 adb -s "$test_serial" get-state 2>&1 || true)"
+              echo "ADB device state: ${device_state:-<empty>}"
               if [ "$device_state" = device ]; then adb_ready=true; break; fi
             fi
             sleep 2
@@ -466,6 +504,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           stop_waydroid_runtime() {
+            if [ -s "$RUNNER_TEMP/waydroid-full-ui.pid" ]; then
+              ui_pid="$(cat "$RUNNER_TEMP/waydroid-full-ui.pid")"
+              kill -TERM -- "-$ui_pid" 2>/dev/null || kill -TERM "$ui_pid" 2>/dev/null || true
+            fi
             if [ -s "$RUNNER_TEMP/waydroid-session-supervisor.pid" ]; then
               supervisor_pid="$(cat "$RUNNER_TEMP/waydroid-session-supervisor.pid")"
               kill -TERM -- "-$supervisor_pid" 2>/dev/null || kill -TERM "$supervisor_pid" 2>/dev/null || true
@@ -473,6 +515,7 @@ jobs:
             sudo systemctl stop waydroid-container >/dev/null 2>&1 || true
           }
           cleanup() {
+            rm -f "$RUNNER_TEMP/waydroid-host-adbkey" "$RUNNER_TEMP/waydroid-host-adbkey.pub"
             rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.key.pem" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.state.json" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.phone.json"
             rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.key.pem" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.state.json" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.otp.json"
             stop_waydroid_runtime
@@ -508,6 +551,7 @@ jobs:
           PYCODE
           if [ ! -f phone-phase-started ]; then
             tail -n 80 "$RUNNER_TEMP/waydroid-session-supervisor.log" 2>/dev/null || true
+            tail -n 80 "$RUNNER_TEMP/waydroid-full-ui.log" 2>/dev/null || true
             tail -n 80 "$RUNNER_TEMP/weston.log" 2>/dev/null || true
             tail -n 80 "$RUNNER_TEMP/pulseaudio.log" 2>/dev/null || true
             sudo timeout 20 waydroid shell getprop sys.boot_completed 2>/dev/null || true
