@@ -1,0 +1,351 @@
+name: REDnote native ARM64 Waydroid phone test
+
+on:
+  push:
+    branches: ["codex/rednote-kvm-test"]
+    paths:
+      - ".github/workflows/rednote-waydroid-arm-test.yml"
+      - "tools/rednote_private_input.py"
+      - "tools/rednote_phone_test.py"
+      - "tools/rednote_login_preview.py"
+      - "tools/rednote_otp_test.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rednote-waydroid-arm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phone:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      TEST_VARIANT: original
+      TEST_PACKAGE: com.xingin.xhs
+      WAYLAND_DISPLAY: wayland-0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install matching Binder module and Waydroid host packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          kernel_release="$(uname -r)"
+          echo "runner_arch=$(uname -m) kernel=$kernel_release"
+          sudo apt-get update -qq
+          module_package="linux-modules-extra-$kernel_release"
+          module_candidate="$(apt-cache policy "$module_package" | awk '/Candidate:/ { print $2; exit }')"
+          if [ -z "$module_candidate" ] || [ "$module_candidate" = "(none)" ]; then
+            echo "No exact Binder module package candidate for running kernel $kernel_release"
+            exit 1
+          fi
+          echo "installing exact package $module_package=$module_candidate"
+          sudo apt-get install -y --no-install-recommends "$module_package=$module_candidate"
+          sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
+          test -d /sys/module/binder_linux
+          grep -qw binder /proc/filesystems
+          binderfs_probe="$RUNNER_TEMP/binderfs-probe"
+          sudo mkdir -p "$binderfs_probe"
+          sudo mount -t binder binder "$binderfs_probe"
+          test -c "$binderfs_probe/binder-control"
+          sudo umount "$binderfs_probe"
+          sudo rmdir "$binderfs_probe"
+
+          sudo apt-get install -y --no-install-recommends adb apksigner ca-certificates curl dbus-daemon gnupg libpulse0 weston
+          curl --fail --location --retry 2 --connect-timeout 20 --max-time 90 https://repo.waydro.id | sudo bash
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends waydroid
+          command -v adb
+          command -v apksigner
+          command -v weston
+          command -v waydroid
+          java -version
+          adb version
+          weston --version
+          waydroid --version
+
+      - name: Initialize official ARM64 Vanilla image and start headless Waydroid
+        shell: bash
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/waydroid-runtime"
+          install -d -m 700 "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "WAYLAND_DISPLAY=$WAYLAND_DISPLAY" >> "$GITHUB_ENV"
+          sudo timeout 900 waydroid init -s VANILLA
+          # Official software rendering fallback for hosts without a render node.
+          sudo python3 - <<'PYCONFIG'
+          import configparser, pathlib
+          path = pathlib.Path("/var/lib/waydroid/waydroid.cfg")
+          config = configparser.ConfigParser()
+          config.read(path)
+          if not config.has_section("properties"):
+              config.add_section("properties")
+          config["properties"]["ro.hardware.gralloc"] = "default"
+          config["properties"]["ro.hardware.egl"] = "swiftshader"
+          with path.open("w") as stream:
+              config.write(stream)
+          PYCONFIG
+          sudo timeout 120 waydroid upgrade -o
+          sudo systemctl enable --now waydroid-container
+          systemctl is-active --quiet waydroid-container
+
+          rm -f "$RUNNER_TEMP/waydroid-dbus-address" "$RUNNER_TEMP/waydroid-session-supervisor.log" "$RUNNER_TEMP/weston.log"
+          nohup setsid dbus-run-session -- bash -c '
+            set -euo pipefail
+            echo "$DBUS_SESSION_BUS_ADDRESS" > "$RUNNER_TEMP/waydroid-dbus-address"
+            weston --no-config --backend=headless --renderer=pixman --socket="$WAYLAND_DISPLAY" --log="$RUNNER_TEMP/weston.log" &
+            weston_pid=$!
+            for attempt in $(seq 1 60); do
+              if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then break; fi
+              if ! kill -0 "$weston_pid" 2>/dev/null; then
+                tail -n 80 "$RUNNER_TEMP/weston.log" || true
+                exit 1
+              fi
+              sleep 1
+            done
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+            if waydroid session start; then
+              echo "Waydroid user session command returned successfully"
+              while true; do sleep 3600; done
+            else
+              status=$?
+              echo "Waydroid user session failed with exit $status"
+              exit "$status"
+            fi
+          ' > "$RUNNER_TEMP/waydroid-session-supervisor.log" 2>&1 </dev/null &
+          supervisor_pid=$!
+          echo "$supervisor_pid" > "$RUNNER_TEMP/waydroid-session-supervisor.pid"
+
+          for attempt in $(seq 1 90); do
+            if ! kill -0 "$supervisor_pid" 2>/dev/null; then
+              tail -n 100 "$RUNNER_TEMP/waydroid-session-supervisor.log" || true
+              tail -n 100 "$RUNNER_TEMP/weston.log" || true
+              exit 1
+            fi
+            if [ -s "$RUNNER_TEMP/waydroid-dbus-address" ] && [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then break; fi
+            sleep 1
+          done
+          test -s "$RUNNER_TEMP/waydroid-dbus-address"
+          export DBUS_SESSION_BUS_ADDRESS="$(cat "$RUNNER_TEMP/waydroid-dbus-address")"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          waydroid status
+
+          waydroid_ip=""
+          for attempt in $(seq 1 60); do
+            status_output="$(waydroid status 2>/dev/null || true)"
+            waydroid_ip="$(echo "$status_output" | awk -F: '/IP address:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+            if [ -n "$waydroid_ip" ] && [ "$waydroid_ip" != "None" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$waydroid_ip" ] || [ "$waydroid_ip" = "None" ]; then
+            echo "Waydroid did not report a container IP"
+            waydroid status || true
+            exit 1
+          fi
+
+          adb connect "$waydroid_ip:5555"
+          test_serial="$waydroid_ip:5555"
+          echo "TEST_SERIAL=$test_serial" >> "$GITHUB_ENV"
+          timeout 60 adb -s "$test_serial" wait-for-device
+          booted=""
+          for attempt in $(seq 1 60); do
+            booted="$(timeout 10 adb -s "$test_serial" shell getprop sys.boot_completed | tr -d '\r' || true)"
+            if [ "$booted" = 1 ]; then break; fi
+            sleep 5
+          done
+          test "$booted" = 1
+          abi_list="$(adb -s "$test_serial" shell getprop ro.product.cpu.abilist | tr -d '\r')"
+          android_api="$(adb -s "$test_serial" shell getprop ro.build.version.sdk | tr -d '\r')"
+          echo "android_api=$android_api abilist=$abi_list"
+          case ",$abi_list," in
+            *,arm64-v8a,*) ;;
+            *) echo "ARM64 Android ABI is not available"; exit 1 ;;
+          esac
+          test "$android_api" -ge 33
+          adb -s "$test_serial" shell service check package
+          adb -s "$test_serial" shell service check activity
+
+      - name: Fetch pinned original XAPK, verify signature, and install native splits
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rednote-input/original
+          curl --fail --location --retry 2 --connect-timeout 20 --max-time 180 --speed-time 30 --speed-limit 1024 'https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21' --output rednote-input/rednote.xapk
+          echo 'bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0  rednote-input/rednote.xapk' | sha256sum --check
+          python3 - <<'PYCODE'
+          import pathlib, zipfile
+          target = pathlib.Path('rednote-input/original')
+          with zipfile.ZipFile('rednote-input/rednote.xapk') as archive:
+              apks = [entry for entry in archive.infolist() if entry.filename.lower().endswith('.apk')]
+              if len(apks) != 3:
+                  raise SystemExit('Unexpected split set')
+              for entry in apks:
+                  target.joinpath(pathlib.PurePosixPath(entry.filename).name).write_bytes(archive.read(entry))
+          PYCODE
+          for apk in rednote-input/original/*.apk; do
+            apksigner verify "$apk" >/dev/null
+            echo "verified original split signature: $(basename "$apk")"
+          done
+          adb -s "$TEST_SERIAL" install-multiple rednote-input/original/*.apk
+
+      - name: Publish a preview before entering any account information
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 tools/rednote_login_preview.py --serial "$TEST_SERIAL" \
+            --package "$TEST_PACKAGE" --output "$RUNNER_TEMP/rednote-preview.json"
+          python3 - <<'PYCODE'
+          import base64, json, os, pathlib, sys
+          sys.path.insert(0, 'tools')
+          from rednote_private_input import api
+          rid = os.environ['GITHUB_RUN_ID']
+          preview = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'rednote-preview.json').read_text())
+          ready = preview.get('phone_form_visible') is True and bool(preview.get('app_pid')) and preview.get('result_category') in ('phone_login_form', 'phone_country_code_visible')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f"PREVIEW_READY={'true' if ready else 'false'}\n")
+          if not ready:
+              limited = {'stage': 'startup_not_ready', 'test_variant': os.environ['TEST_VARIANT'],
+                         'result_category': preview.get('result_category'), 'phone_input_performed': False,
+                         'sms_requested': False, 'app_pid': preview.get('app_pid'),
+                         'matched_prompt_keywords': preview.get('matched_prompt_keywords', []),
+                         'runtime_diagnostics': preview.get('runtime_diagnostics', {})}
+              pathlib.Path('phone-result.json').write_text(json.dumps(limited, ensure_ascii=False))
+          api('PUT', f'runtime-control/rednote-{rid}.preview.json', {
+              'message': f'Add account-free login preview for run {rid}',
+              'branch': os.environ['GITHUB_REF_NAME'],
+              'content': base64.b64encode(pathlib.Path(os.environ['RUNNER_TEMP'], 'rednote-preview.json').read_bytes()).decode('ascii')
+          })
+          PYCODE
+
+      - name: Receive a single encrypted phone input for this runner
+        if: env.PREVIEW_READY == 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 tools/rednote_private_input.py generate
+          python3 tools/rednote_private_input.py wait --timeout 600
+
+      - name: Test the selected variant's phone flow once
+        if: env.PREVIEW_READY == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch phone-phase-started
+          python3 tools/rednote_phone_test.py \
+            --serial "$TEST_SERIAL" --package "$TEST_PACKAGE" \
+            --payload-file "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.phone.json" \
+            --report-file phone-result.json
+          rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.phone.json"
+
+      - name: Publish the phone result and determine whether a user code is needed
+        if: env.PREVIEW_READY == 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import base64, json, os, pathlib, sys
+          sys.path.insert(0, 'tools')
+          from rednote_private_input import api
+          report = json.loads(pathlib.Path('phone-result.json').read_text())
+          need_otp = report['result_category'] == 'otp_screen' and report['steps']['get_code_clicked']
+          report['stage'] = 'waiting_otp' if need_otp else 'phone_finished'
+          report['test_variant'] = os.environ['TEST_VARIANT']
+          pathlib.Path('phone-result.json').write_text(json.dumps(report, ensure_ascii=False))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f"NEED_OTP={'true' if need_otp else 'false'}\n")
+          api('PUT', f"runtime-control/rednote-{os.environ['GITHUB_RUN_ID']}.result.json", {
+              'message': 'Record the limited phone-test result',
+              'branch': os.environ['GITHUB_REF_NAME'],
+              'content': base64.b64encode(pathlib.Path('phone-result.json').read_bytes()).decode('ascii')
+          })
+          PYCODE
+
+      - name: Receive a user-supplied code for the same session
+        if: env.NEED_OTP == 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 tools/rednote_private_input.py generate --kind otp
+          python3 tools/rednote_private_input.py wait --kind otp --timeout 600
+
+      - name: Verify the user-supplied code once
+        if: env.NEED_OTP == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/rednote_otp_test.py \
+            --serial "$TEST_SERIAL" --package "$TEST_PACKAGE" \
+            --payload-file "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.otp.json" \
+            --report-file otp-result.json
+          rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.otp.json"
+
+      - name: Publish the limited result and clean up
+        if: always()
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          stop_waydroid_runtime() {
+            if [ -s "$RUNNER_TEMP/waydroid-session-supervisor.pid" ]; then
+              supervisor_pid="$(cat "$RUNNER_TEMP/waydroid-session-supervisor.pid")"
+              kill -TERM -- "-$supervisor_pid" 2>/dev/null || kill -TERM "$supervisor_pid" 2>/dev/null || true
+            fi
+            sudo systemctl stop waydroid-container >/dev/null 2>&1 || true
+          }
+          cleanup() {
+            rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.key.pem" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.state.json" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.phone.json"
+            rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.key.pem" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.state.json" "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID-otp.otp.json"
+            stop_waydroid_runtime
+          }
+          trap cleanup EXIT
+          python3 - <<'PYCODE'
+          import base64, json, os, pathlib, sys
+          sys.path.insert(0, 'tools')
+          from rednote_private_input import api
+          report = pathlib.Path('phone-result.json')
+          if report.is_file():
+              data = json.loads(report.read_text())
+              otp = pathlib.Path('otp-result.json')
+              if otp.is_file():
+                  data['otp'] = json.loads(otp.read_text())
+                  data['stage'] = 'complete'
+              elif os.environ.get('NEED_OTP') == 'true':
+                  data['stage'] = 'otp_not_completed'
+              path = f"runtime-control/rednote-{os.environ['GITHUB_RUN_ID']}.result.json"
+              old = api('GET', path)
+              body = {
+                  'message': 'Record limited REDnote phone-test result',
+                  'branch': os.environ['GITHUB_REF_NAME'],
+                  'content': base64.b64encode(json.dumps(data, ensure_ascii=False).encode()).decode('ascii')
+              }
+              if old:
+                  body['sha'] = old['sha']
+              api('PUT', path, body)
+              print(json.dumps(data, ensure_ascii=False))
+          for infix, suffixes in (('', ('key.pem', 'state.json', 'phone.json')), ('-otp', ('key.pem', 'state.json', 'otp.json'))):
+              for suffix in suffixes:
+                  pathlib.Path(os.environ['RUNNER_TEMP'], f"rednote-{os.environ['GITHUB_RUN_ID']}{infix}.{suffix}").unlink(missing_ok=True)
+          PYCODE
+          if [ ! -f phone-phase-started ]; then
+            tail -n 80 "$RUNNER_TEMP/waydroid-session-supervisor.log" 2>/dev/null || true
+            tail -n 80 "$RUNNER_TEMP/weston.log" 2>/dev/null || true
+          fi
+          stop_waydroid_runtime

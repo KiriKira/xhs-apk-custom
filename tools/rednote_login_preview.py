@@ -25,6 +25,12 @@ PERMISSION_PACKAGE = "com.google.android.permissioncontroller"
 PERMISSION_MESSAGE_ID = "com.android.permissioncontroller:id/permission_message"
 PERMISSION_DENY_ID = "com.android.permissioncontroller:id/permission_deny_button"
 PERMISSION_MESSAGE = "allow rednote to send you notifications?"
+FOREIGN_PACKAGES = {
+    "com.google.android.gms": "google_gms",
+    "com.android.launcher3": "android_launcher",
+    "com.google.android.apps.nexuslauncher": "google_launcher",
+    "com.google.android.permissioncontroller": "permission_controller",
+}
 EXIT_RECORD_RE = re.compile(r"(?m)^\s*#\d+\s*:\s*")
 EXIT_PROCESS_RE = re.compile(r"\b(?:process|processName)\s*[=:]\s*([^,\s)]+)", re.I)
 EXIT_REASON_RE = re.compile(r"\breason\s*[=:]\s*(\d+)(?:\s*\(([A-Z0-9_]+)\))?", re.I)
@@ -70,6 +76,49 @@ def notification_deny_target(root):
     if len(targets) != 1:
         return True, None, len(targets)
     return True, next(iter(targets.values())), 1
+
+
+def scoped_action(adb, root, package, labels, preferred=False):
+    """Click a unique matching control only when both it and its click target belong to the app."""
+    groups = []
+    for label in labels:
+        found = {}
+        for node in root.iter():
+            if (ui.visible(node) and node.attrib.get("package") == package
+                    and any(ui.norm(value) == ui.norm(label) for value in ui.attrs(node))):
+                target = ui.clickable(root, node)
+                if target is not None and target.attrib.get("package") == package:
+                    found[id(target)] = target
+        if found:
+            groups.append((label, list(found.values())))
+            if preferred:
+                break
+    targets = {id(node): node for _, group in groups for node in group}
+    if not targets:
+        return False, None, 0
+    if len(targets) != 1:
+        return False, None, len(targets)
+    label, target = next((label, node) for label, group in groups for node in group)
+    return adb.tap(target.attrib.get("bounds")), label, 1
+
+
+def foreign_ui_category(root, expected_package):
+    visible_packages = {node.attrib.get("package") for node in root.iter() if ui.visible(node)}
+    if expected_package in visible_packages:
+        return None
+    return next((category for package, category in FOREIGN_PACKAGES.items()
+                 if package in visible_packages), None)
+
+
+def serialize_ui(root, expected_package):
+    """Keep the hierarchy while withholding text from system and other foreign windows."""
+    copy = ET.fromstring(ET.tostring(root, encoding="utf-8"))
+    for node in copy.iter():
+        if node.attrib.get("package") != expected_package:
+            for key in ("text", "content-desc", "hint", "hint-text"):
+                if node.attrib.get(key):
+                    node.attrib[key] = "[FOREIGN_UI_TEXT_REDACTED]"
+    return ET.tostring(copy, encoding="unicode")
 
 
 def parse_exit_info(output, package):
@@ -149,7 +198,7 @@ def run(serial, package):
         "package": package, "launched": False, "launches": [], "result_category": "unsupported_ui",
         "matched_prompt_keywords": [], "steps": [], "phone_input_performed": False,
         "sms_requested": False, "phone_form_visible": False,
-        "screenshot_png_base64": None, "ui_xml": None,
+        "foreign_ui_package": None, "screenshot_png_base64": None, "ui_xml": None,
     }
     observed_pids = []
     last_xml = None
@@ -182,7 +231,7 @@ def run(serial, package):
                             break
                         time.sleep(min(1, max(0, navigation_deadline-time.monotonic())))
                         continue
-                    last_xml = ET.tostring(root, encoding="unicode")
+                    last_xml = serialize_ui(root, package)
                     texts = ui.ui_text(root)
                     unsafe = ui.matches(texts, ui.UNSAFE)
                     captcha = ui.matches(texts, ui.CAPTCHA)
@@ -229,6 +278,16 @@ def run(serial, package):
                                 break
                         continue
 
+                    foreign_category = foreign_ui_category(root, package)
+                    if foreign_category:
+                        report["foreign_ui_package"] = foreign_category
+                        report["result_category"] = "foreign_ui"
+                        if foreign_category in ("android_launcher", "google_launcher"):
+                            time.sleep(min(1, max(0, navigation_deadline-time.monotonic())))
+                            continue
+                        break
+                    report["foreign_ui_package"] = None
+
                     # The preview ends at a clearly identified phone field or country code.
                     phone_field = bool(ui.fields(root, ui.PHONE_HINTS))
                     has_country_code = any("+86" in text for text in texts)
@@ -247,7 +306,7 @@ def run(serial, package):
                     acted = False
                     for step, labels in choices:
                         preferred = step != "privacy_agree"
-                        did_click, label, count = ui.action(adb, root, labels, preferred=preferred)
+                        did_click, label, count = scoped_action(adb, root, package, labels, preferred=preferred)
                         if count > 1:
                             report["result_category"] = "ambiguous_ui"
                             report["matched_prompt_keywords"] = [label] if label else []
@@ -264,7 +323,8 @@ def run(serial, package):
                     if not acted:
                         time.sleep(min(1, max(0, navigation_deadline-time.monotonic())))
                 else:
-                    report.update(result_category="timeout", timeout=True)
+                    if not report["foreign_ui_package"]:
+                        report.update(result_category="timeout", timeout=True)
                 if last_xml is not None:
                     report["ui_xml"] = last_xml
 
@@ -325,7 +385,7 @@ def run(serial, package):
             adb.deadline = min(deadline, time.monotonic() + 15)
             root, _ = adb.ui()
             if root is not None:
-                report["ui_xml"] = ET.tostring(root, encoding="unicode")
+                report["ui_xml"] = serialize_ui(root, package)
     except Exception as exc:
         report["capture_error_type"] = type(exc).__name__
     report["phone_input_performed"] = False
