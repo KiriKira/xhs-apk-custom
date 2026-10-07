@@ -1,5 +1,8 @@
 import unittest
 import xml.etree.ElementTree as ET
+import shutil
+import tempfile
+import zipfile
 
 from pathlib import Path
 
@@ -9,6 +12,7 @@ from build_rednote import (
     dex_name_for_smali,
     is_signature_metadata,
     patch_main_process_package_gate,
+    prepare_selective_dex_rebuild,
     reject_split_manifest,
     transform_manifest,
 )
@@ -276,6 +280,53 @@ class MainProcessPackageGateTests(unittest.TestCase):
         self.smali_path.write_text(text, encoding="utf-8")
         with self.assertRaises(BuildError):
             patch_main_process_package_gate(self.smali_path, OLD_PACKAGE, NEW_PACKAGE)
+
+
+class SelectiveDexRebuildTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="rednote-dex-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.temp_dir, ignore_errors=True))
+        self.decoded = self.temp_dir / "decoded"
+        self.smali_root = self.decoded / "smali"
+        for dirname in ("classes", "classes2", "classes4", "classes17"):
+            (self.smali_root / dirname).mkdir(parents=True)
+            (self.smali_root / dirname / "Example.smali").write_text(".class Example\n")
+        self.baseline = self.temp_dir / "baseline.apk"
+        self.dex_payloads = {
+            "classes.dex": b"dex-main-original",
+            "classes2.dex": b"dex-2-original",
+            "classes4.dex": b"dex-4-original",
+            "classes17.dex": b"dex-17-original",
+        }
+        with zipfile.ZipFile(self.baseline, "w") as archive:
+            for name, data in self.dex_payloads.items():
+                archive.writestr(name, data)
+
+    def test_only_touched_dex_remains_smali_and_other_dexes_are_raw_passthrough(self):
+        audit = prepare_selective_dex_rebuild(
+            self.decoded, self.baseline, {"classes4.dex", "classes17.dex"}
+        )
+        self.assertEqual(audit["rebuiltDexEntries"], ["classes17.dex", "classes4.dex"])
+        self.assertEqual(audit["passthroughDexEntries"], ["classes.dex", "classes2.dex"])
+        self.assertEqual(
+            sorted(path.name for path in self.smali_root.iterdir()),
+            ["classes17", "classes4"],
+        )
+        self.assertEqual(
+            sorted(path.name for path in (self.decoded / "dex").iterdir()),
+            ["classes.dex", "classes2.dex"],
+        )
+        with zipfile.ZipFile(self.baseline) as source:
+            for name in audit["passthroughDexEntries"]:
+                self.assertEqual(
+                    (self.decoded / "dex" / name).read_bytes(), source.read(name)
+                )
+
+    def test_rejects_a_selected_dex_without_a_smali_directory(self):
+        with self.assertRaises(BuildError):
+            prepare_selective_dex_rebuild(
+                self.decoded, self.baseline, {"classes3.dex"}
+            )
 
 
 if __name__ == "__main__":

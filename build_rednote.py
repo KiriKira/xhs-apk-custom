@@ -770,6 +770,73 @@ def dex_name_for_smali(decoded_dir: Path, smali_path: Path) -> str:
     raise BuildError(f"Cannot map smali directory to a dex entry: {root}")
 
 
+def prepare_selective_dex_rebuild(
+    decoded_dir: Path, baseline_apk: Path, rebuilt_dex_names: set[str]
+) -> dict[str, list[str]]:
+    """Keep only touched DEXes as smali and pass every other DEX through raw.
+
+    APKEditor can encode raw DEX files from ``dex/`` alongside selected smali
+    class directories. This avoids recompiling all of a large app just to
+    change one package-dependent process predicate.
+    """
+    if not rebuilt_dex_names:
+        raise BuildError("At least one DEX must be selected for rebuilding")
+    invalid = sorted(
+        name for name in rebuilt_dex_names if not re.fullmatch(r"classes(?:\d+)?\.dex", name)
+    )
+    if invalid:
+        raise BuildError(f"Invalid DEX names for selective rebuild: {invalid}")
+
+    smali_root = decoded_dir / "smali"
+    if not smali_root.is_dir():
+        raise BuildError(f"Decoded smali directory is missing: {smali_root}")
+
+    available_smali_dirs: dict[str, Path] = {}
+    for path in smali_root.iterdir():
+        if not path.is_dir():
+            continue
+        if path.name == "classes":
+            dex_name = "classes.dex"
+        else:
+            match = re.fullmatch(r"classes(\d+)", path.name)
+            if not match:
+                continue
+            dex_name = f"classes{match.group(1)}.dex"
+        available_smali_dirs[dex_name] = path
+
+    missing_smali = sorted(rebuilt_dex_names - available_smali_dirs.keys())
+    if missing_smali:
+        raise BuildError(f"No decoded smali directory for selected DEX entries: {missing_smali}")
+
+    raw_dex_dir = decoded_dir / "dex"
+    if raw_dex_dir.exists():
+        shutil.rmtree(raw_dex_dir)
+    raw_dex_dir.mkdir(parents=True)
+
+    with zipfile.ZipFile(baseline_apk, "r") as baseline:
+        source_names = {
+            name
+            for name in baseline.namelist()
+            if re.fullmatch(r"classes(?:\d+)?\.dex", name)
+        }
+        missing_source = sorted(rebuilt_dex_names - source_names)
+        if missing_source:
+            raise BuildError(f"Selected DEX entries are missing from baseline APK: {missing_source}")
+        passthrough = sorted(source_names - rebuilt_dex_names)
+        for name in passthrough:
+            with baseline.open(name, "r") as source, (raw_dex_dir / name).open("wb") as target:
+                shutil.copyfileobj(source, target, length=1024 * 1024)
+
+    for dex_name, path in available_smali_dirs.items():
+        if dex_name not in rebuilt_dex_names:
+            shutil.rmtree(path)
+
+    return {
+        "rebuiltDexEntries": sorted(rebuilt_dex_names),
+        "passthroughDexEntries": passthrough,
+    }
+
+
 def patch_boolean_method(path: Path, method_name: str, value: bool = True) -> None:
     text = path.read_text(encoding="utf-8")
     method_re = re.compile(
@@ -1289,6 +1356,10 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 "--fold-layout changed DeviceInfoContainer.isHorizontalFolderDevice() and isPad() to return true."
             )
 
+        dex_rebuild_audit = prepare_selective_dex_rebuild(
+            decoded_dir, merge_input, touched_dex_names
+        )
+
         rebuilt = temporary_root / "rebuilt.apk"
         build_args: list[str | Path] = [
             "java",
@@ -1401,6 +1472,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                     "The clone's default process name follows the new applicationId."
                 ),
             },
+            "dexRebuildAudit": dex_rebuild_audit,
             "buildConfiguration": {
                 "dexProcessingLibrary": "jf",
                 "decodeLoadDex": 1,
