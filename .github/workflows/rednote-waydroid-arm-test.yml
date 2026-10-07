@@ -61,7 +61,7 @@ jobs:
           sudo umount "$binderfs_probe"
           sudo rmdir "$binderfs_probe"
 
-          sudo apt-get install -y --no-install-recommends adb apksigner ca-certificates curl dbus-daemon gnupg libpulse0 weston
+          sudo apt-get install -y --no-install-recommends adb apksigner ca-certificates curl dbus-daemon gnupg libpulse0 pulseaudio weston
           curl --fail --location --retry 2 --connect-timeout 20 --max-time 90 https://repo.waydro.id | sudo bash
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends waydroid
@@ -104,6 +104,17 @@ jobs:
           nohup setsid dbus-run-session -- bash -c '
             set -euo pipefail
             echo "$DBUS_SESSION_BUS_ADDRESS" > "$RUNNER_TEMP/waydroid-dbus-address"
+            pulseaudio --daemonize=no --exit-idle-time=-1 --log-target="file:$RUNNER_TEMP/pulseaudio.log" &
+            pulse_pid=$!
+            for attempt in $(seq 1 20); do
+              if [ -S "$XDG_RUNTIME_DIR/pulse/native" ]; then break; fi
+              if ! kill -0 "$pulse_pid" 2>/dev/null; then
+                tail -n 80 "$RUNNER_TEMP/pulseaudio.log" || true
+                exit 1
+              fi
+              sleep 1
+            done
+            test -S "$XDG_RUNTIME_DIR/pulse/native"
             weston --no-config --backend=headless --renderer=pixman --socket="$WAYLAND_DISPLAY" --log="$RUNNER_TEMP/weston.log" &
             weston_pid=$!
             for attempt in $(seq 1 60); do
@@ -348,6 +359,7 @@ jobs:
           if [ ! -f phone-phase-started ]; then
             tail -n 80 "$RUNNER_TEMP/waydroid-session-supervisor.log" 2>/dev/null || true
             tail -n 80 "$RUNNER_TEMP/weston.log" 2>/dev/null || true
+            tail -n 80 "$RUNNER_TEMP/pulseaudio.log" 2>/dev/null || true
             sudo tail -n 240 /var/lib/waydroid/waydroid.log 2>/dev/null || true
             sudo journalctl --no-pager -u waydroid-container -n 100 2>/dev/null || true
             sudo lxc-info -P /var/lib/waydroid/lxc -n waydroid 2>/dev/null || true
