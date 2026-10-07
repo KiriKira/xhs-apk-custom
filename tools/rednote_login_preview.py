@@ -16,7 +16,8 @@ import rednote_phone_test as ui
 PREVIEW_SECONDS = 135
 CAPTURE_RESERVE_SECONDS = 60
 PHONE_DIRECT = ("其他手机号登录", "其他手机号码登录", "手机号登录", "手机号码登录", "手机号登陆",
-                "phone number login", "log in with phone", "use phone number")
+                "phone number login", "log in with phone", "use phone number",
+                "continue with phone number")
 OTHER_LOGIN = ("其他登录方式", "其他方式登录", "更多登录方式", "other login options", "more sign-in options")
 LOGIN = ("登录/注册", "登录", "注册/登录", "log in", "sign in", "login", "sign up")
 ME = ("我", "我的", "me", "profile", "my profile")

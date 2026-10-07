@@ -570,7 +570,7 @@ jobs:
             tail -n 80 "$RUNNER_TEMP/pulseaudio.log" 2>/dev/null || true
             sudo timeout 20 waydroid shell getprop sys.boot_completed 2>/dev/null || true
             sudo timeout 20 waydroid shell service check activity 2>/dev/null || true
-            sudo timeout 20 waydroid shell logcat -d -b crash -t 120 2>/dev/null || true
+            sudo timeout 20 waydroid shell -- logcat -d -b crash -t 120 2>/dev/null || true
             sudo tail -n 240 /var/lib/waydroid/waydroid.log 2>/dev/null || true
             sudo journalctl --no-pager -u waydroid-container -n 100 2>/dev/null || true
             sudo lxc-info -P /var/lib/waydroid/lxc -n waydroid 2>/dev/null || true
