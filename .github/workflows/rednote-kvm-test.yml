@@ -50,12 +50,18 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
+          ANDROID_AVD_HOME: ${{ runner.temp }}/rednote-avds
+          ANDROID_USER_HOME: ${{ runner.temp }}/rednote-android-home
         run: |
           set -euo pipefail
           emulator -version
+          mkdir -p "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME"
           printf 'no\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
             --force --name rednote-ci --package 'system-images;android-35;google_apis;x86_64' \
-            --device pixel_6
+            --device pixel_6 --path "$ANDROID_AVD_HOME/rednote-ci.avd"
+          printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-35\n' \
+            "$ANDROID_AVD_HOME/rednote-ci.avd" > "$ANDROID_AVD_HOME/rednote-ci.ini"
+          emulator -list-avds
           cat "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/source.properties"
           nohup emulator -avd rednote-ci -accel on -cores 2 -memory 3072 \
             -gpu swiftshader -no-window -no-audio -no-boot-anim -no-snapshot \
