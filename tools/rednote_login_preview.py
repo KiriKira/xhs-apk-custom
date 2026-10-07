@@ -30,6 +30,9 @@ EXIT_PROCESS_RE = re.compile(r"\b(?:process|processName)\s*[=:]\s*([^,\s)]+)", r
 EXIT_REASON_RE = re.compile(r"\breason\s*[=:]\s*(\d+)(?:\s*\(([A-Z0-9_]+)\))?", re.I)
 EXIT_STATUS_RE = re.compile(r"\bstatus\s*[=:]\s*(-?\d+)", re.I)
 EXIT_PID_RE = re.compile(r"\bpid\s*[=:]\s*(\d+)", re.I)
+NATIVE_FRAME_RE = re.compile(r"#\s*\d+\s+pc\s+([0-9a-fA-F]+)\s+([^\s(]+)")
+TOMBSTONE_CMDLINE_RE = re.compile(r"\bCmdline:\s*([A-Za-z0-9_.:-]+)")
+TOMBSTONE_PROC_RE = re.compile(r">>>\s*([A-Za-z0-9_.:-]+)\s*<<<")
 
 
 class BoundedAdb(ui.Adb):
@@ -104,6 +107,39 @@ def combine_crash_summaries(*summaries):
             if len(events) >= 10:
                 break
     return {"detected": bool(events), "events": events}
+
+
+def extract_native_frames(logcat, package):
+    """Return at most ten package-tombstone frames with path and symbols removed."""
+    lines = logcat.splitlines()
+    package_prefix = package + ":"
+    anchors = []
+    for index, line in enumerate(lines):
+        match = TOMBSTONE_CMDLINE_RE.search(line) or TOMBSTONE_PROC_RE.search(line)
+        if match and (match.group(1) == package or match.group(1).startswith(package_prefix)):
+            anchors.append(index)
+    frames, seen = [], set()
+    for start in anchors:
+        for line in lines[start + 1:start + 301]:
+            if "*** *** ***" in line or "--------- beginning of crash" in line:
+                break
+            other = TOMBSTONE_CMDLINE_RE.search(line) or TOMBSTONE_PROC_RE.search(line)
+            if other:
+                break
+            match = NATIVE_FRAME_RE.search(line)
+            if not match:
+                continue
+            library = match.group(2).rsplit("/", 1)[-1]
+            if library in ("", "??"):
+                continue
+            frame = {"library": library, "pc": match.group(1).lower()}
+            key = (frame["library"], frame["pc"])
+            if key not in seen:
+                frames.append(frame)
+                seen.add(key)
+            if len(frames) >= 10:
+                return frames
+    return frames
 
 
 def run(serial, package):
@@ -253,6 +289,9 @@ def run(serial, package):
         crash_summary = smoke.extract_crash_summary(
             crash_logs.decode("utf-8", errors="replace") if crash_ok else "", package
         )
+        native_frames = extract_native_frames(
+            crash_logs.decode("utf-8", errors="replace") if crash_ok else "", package
+        )
         exit_ok, exit_output, exit_timed = adb.run(
             "shell", "dumpsys", "activity", "exit-info", package, timeout=8
         )
@@ -265,6 +304,7 @@ def run(serial, package):
             "crash_buffer_timed_out": crash_timed,
             "exit_info_timed_out": exit_timed,
             "crash_summary": combine_crash_summaries(log_summary, crash_summary),
+            "native_backtrace_frames": native_frames,
             "exit_info": {"parsed_record_count": len(exit_records), "records": exit_records},
         }
     except Exception as exc:

@@ -25,7 +25,7 @@ jobs:
     permissions:
       contents: write
     env:
-      TEST_VARIANT: original
+      TEST_VARIANT: control
       TEST_API: "30"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -138,10 +138,21 @@ jobs:
           python3 tools/rednote_login_preview.py --serial emulator-5554 \
             --package "$TEST_PACKAGE" --output "$RUNNER_TEMP/rednote-preview.json"
           python3 - <<'PYCODE'
-          import base64, os, pathlib, sys
+          import base64, json, os, pathlib, sys
           sys.path.insert(0, 'tools')
           from rednote_private_input import api
           rid = os.environ['GITHUB_RUN_ID']
+          preview = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'rednote-preview.json').read_text())
+          ready = preview.get('phone_form_visible') is True and bool(preview.get('app_pid')) and preview.get('result_category') in ('phone_login_form', 'phone_country_code_visible')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f"PREVIEW_READY={'true' if ready else 'false'}\n")
+          if not ready:
+              limited = {'stage': 'startup_not_ready', 'test_variant': os.environ['TEST_VARIANT'],
+                         'result_category': preview.get('result_category'), 'phone_input_performed': False,
+                         'sms_requested': False, 'app_pid': preview.get('app_pid'),
+                         'matched_prompt_keywords': preview.get('matched_prompt_keywords', []),
+                         'runtime_diagnostics': preview.get('runtime_diagnostics', {})}
+              pathlib.Path('phone-result.json').write_text(json.dumps(limited, ensure_ascii=False))
           api('PUT', f'runtime-control/rednote-{rid}.preview.json', {
               'message': f'Add account-free login preview for run {rid}',
               'branch': os.environ['GITHUB_REF_NAME'],
@@ -150,6 +161,7 @@ jobs:
           PYCODE
 
       - name: Receive a single encrypted phone input for this runner
+        if: env.PREVIEW_READY == 'true'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -159,6 +171,7 @@ jobs:
           python3 tools/rednote_private_input.py wait --timeout 600
 
       - name: Test the selected variant's phone flow once
+        if: env.PREVIEW_READY == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -170,6 +183,7 @@ jobs:
           rm -f "$RUNNER_TEMP/rednote-$GITHUB_RUN_ID.phone.json"
 
       - name: Publish the phone result and determine whether a user code is needed
+        if: env.PREVIEW_READY == 'true'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
