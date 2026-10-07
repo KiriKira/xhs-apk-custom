@@ -21,7 +21,10 @@ OTHER_LOGIN = ("其他登录方式", "其他方式登录", "更多登录方式",
 LOGIN = ("登录/注册", "登录", "注册/登录", "log in", "sign in", "login", "sign up")
 ME = ("我", "我的", "me", "profile", "my profile")
 AGREE = ("同意并继续", "同意并使用", "同意", "接受", "agree", "accept")
-PERMISSION_PACKAGE = "com.google.android.permissioncontroller"
+PERMISSION_PACKAGES = {
+    "com.google.android.permissioncontroller",
+    "com.android.permissioncontroller",
+}
 PERMISSION_MESSAGE_ID = "com.android.permissioncontroller:id/permission_message"
 PERMISSION_DENY_ID = "com.android.permissioncontroller:id/permission_deny_button"
 PERMISSION_MESSAGE = "allow rednote to send you notifications?"
@@ -30,6 +33,7 @@ FOREIGN_PACKAGES = {
     "com.android.launcher3": "android_launcher",
     "com.google.android.apps.nexuslauncher": "google_launcher",
     "com.google.android.permissioncontroller": "permission_controller",
+    "com.android.permissioncontroller": "permission_controller",
 }
 EXIT_RECORD_RE = re.compile(r"(?m)^\s*#\d+\s*:\s*")
 EXIT_PROCESS_RE = re.compile(r"\b(?:process|processName)\s*[=:]\s*([^,\s)]+)", re.I)
@@ -57,16 +61,17 @@ class BoundedAdb(ui.Adb):
 
 def notification_deny_target(root):
     texts = [n for n in root.iter() if ui.visible(n)
-             and n.attrib.get("package") == PERMISSION_PACKAGE
+             and n.attrib.get("package") in PERMISSION_PACKAGES
              and n.attrib.get("resource-id") == PERMISSION_MESSAGE_ID
              and ui.norm(n.attrib.get("text")) == PERMISSION_MESSAGE]
     if not texts:
         return False, None, 0
     if len(texts) != 1:
         return True, None, len(texts)
+    prompt_package = texts[0].attrib.get("package")
     targets = {}
     for node in root.iter():
-        if (ui.visible(node) and node.attrib.get("package") == PERMISSION_PACKAGE
+        if (ui.visible(node) and node.attrib.get("package") == prompt_package
                 and node.attrib.get("resource-id") == PERMISSION_DENY_ID
                 and ui.norm(node.attrib.get("text")) in ("don't allow", "don’t allow")
                 and node.attrib.get("enabled", "true") == "true"):
@@ -76,6 +81,21 @@ def notification_deny_target(root):
     if len(targets) != 1:
         return True, None, len(targets)
     return True, next(iter(targets.values())), 1
+
+
+def phone_form_indicators(root, expected_package):
+    """Only app-owned nodes can establish that the phone form is visible."""
+    phone_field = any(
+        node.attrib.get("package") == expected_package
+        for node in ui.fields(root, ui.PHONE_HINTS)
+    )
+    app_texts = [
+        ui.norm(value)
+        for node in root.iter()
+        if ui.visible(node) and node.attrib.get("package") == expected_package
+        for value in ui.attrs(node) if value
+    ]
+    return phone_field, any("+86" in text for text in app_texts)
 
 
 def scoped_action(adb, root, package, labels, preferred=False):
@@ -289,8 +309,7 @@ def run(serial, package):
                     report["foreign_ui_package"] = None
 
                     # The preview ends at a clearly identified phone field or country code.
-                    phone_field = bool(ui.fields(root, ui.PHONE_HINTS))
-                    has_country_code = any("+86" in text for text in texts)
+                    phone_field, has_country_code = phone_form_indicators(root, package)
                     if phone_field or has_country_code:
                         report["phone_form_visible"] = True
                         report["result_category"] = "phone_login_form" if phone_field else "phone_country_code_visible"

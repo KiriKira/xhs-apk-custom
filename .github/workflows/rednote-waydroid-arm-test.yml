@@ -116,8 +116,8 @@ jobs:
             done
             test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
             if waydroid session start; then
-              echo "Waydroid user session command returned successfully"
-              while true; do sleep 3600; done
+              echo "Waydroid user session terminated before cleanup"
+              exit 1
             else
               status=$?
               echo "Waydroid user session failed with exit $status"
@@ -143,6 +143,7 @@ jobs:
 
           waydroid_ip=""
           for attempt in $(seq 1 60); do
+            if ! kill -0 "$supervisor_pid" 2>/dev/null; then break; fi
             status_output="$(waydroid status 2>/dev/null || true)"
             waydroid_ip="$(echo "$status_output" | awk -F: '/IP address:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
             if [ -n "$waydroid_ip" ] && [ "$waydroid_ip" != "None" ]; then break; fi
@@ -347,5 +348,8 @@ jobs:
           if [ ! -f phone-phase-started ]; then
             tail -n 80 "$RUNNER_TEMP/waydroid-session-supervisor.log" 2>/dev/null || true
             tail -n 80 "$RUNNER_TEMP/weston.log" 2>/dev/null || true
+            sudo tail -n 240 /var/lib/waydroid/waydroid.log 2>/dev/null || true
+            sudo journalctl --no-pager -u waydroid-container -n 100 2>/dev/null || true
+            sudo lxc-info -P /var/lib/waydroid/lxc -n waydroid 2>/dev/null || true
           fi
           stop_waydroid_runtime
