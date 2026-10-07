@@ -88,11 +88,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p rednote-input/original bins output_apks
-          curl --fail --location --retry 2 \
+          curl --fail --location --retry 2 --connect-timeout 20 --max-time 240 --speed-time 30 --speed-limit 1024 \
             'https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21' \
             --output rednote-input/rednote.xapk
           echo 'bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0  rednote-input/rednote.xapk' | sha256sum --check
-          curl --fail --location --retry 2 \
+          curl --fail --location --retry 2 --connect-timeout 20 --max-time 240 --speed-time 30 --speed-limit 1024 \
             'https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar' \
             --output bins/apkeditor.jar
           echo 'a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67  bins/apkeditor.jar' | sha256sum --check
