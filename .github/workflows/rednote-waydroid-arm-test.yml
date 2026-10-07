@@ -9,23 +9,35 @@ on:
       - "tools/rednote_phone_test.py"
       - "tools/rednote_login_preview.py"
       - "tools/rednote_otp_test.py"
+      - "build_rednote.py"
+      - "ks_pkcs12.keystore"
   workflow_dispatch:
+    inputs:
+      variant:
+        description: Variant to test on native ARM64 Waydroid
+        required: true
+        type: choice
+        options:
+          - original
+          - control
+          - fold
+        default: original
 
 permissions:
   contents: read
 
 concurrency:
-  group: rednote-waydroid-arm-${{ github.ref }}
+  group: rednote-waydroid-arm-${{ github.ref }}-${{ inputs.variant || 'original' }}
   cancel-in-progress: true
 
 jobs:
   phone:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 40
+    timeout-minutes: ${{ (inputs.variant == 'control' || inputs.variant == 'fold') && 60 || 40 }}
     permissions:
       contents: write
     env:
-      TEST_VARIANT: original
+      TEST_VARIANT: ${{ inputs.variant || 'original' }}
       TEST_PACKAGE: com.xingin.xhs
       WAYLAND_DISPLAY: wayland-0
     steps:
@@ -61,7 +73,7 @@ jobs:
           sudo umount "$binderfs_probe"
           sudo rmdir "$binderfs_probe"
 
-          sudo apt-get install -y --no-install-recommends adb apksigner ca-certificates curl dbus-daemon gnupg libpulse0 pulseaudio weston
+          sudo apt-get install -y --no-install-recommends adb apksigner ca-certificates curl dbus-daemon gnupg libpulse0 pulseaudio unzip weston
           curl --fail --location --retry 2 --connect-timeout 20 --max-time 90 https://repo.waydro.id | sudo bash
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends waydroid
@@ -73,6 +85,125 @@ jobs:
           adb version
           weston --version
           waydroid --version
+
+      - name: Fetch pinned source and build the selected clone before Android startup
+        shell: bash
+        env:
+          KEYSTORE_PASSWORD: "123456789"
+          KEY_PASSWORD: "123456789"
+        run: |
+          set -euo pipefail
+          case "$TEST_VARIANT" in
+            original|control|fold) ;;
+            *) echo "Unsupported test variant: $TEST_VARIANT"; exit 2 ;;
+          esac
+          mkdir -p rednote-input/original bins output_apks rednote-report
+          curl --fail --location --retry 2 --connect-timeout 20 --max-time 240 --speed-time 30 --speed-limit 1024 \
+            'https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21' \
+            --output rednote-input/rednote.xapk
+          echo 'bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0  rednote-input/rednote.xapk' | sha256sum --check
+
+          if [ "$TEST_VARIANT" = original ]; then
+            python3 - <<'PYCODE'
+          import pathlib, zipfile
+          target = pathlib.Path('rednote-input/original')
+          with zipfile.ZipFile('rednote-input/rednote.xapk') as archive:
+              apks = [entry for entry in archive.infolist() if entry.filename.lower().endswith('.apk')]
+              if len(apks) != 3:
+                  raise SystemExit('Unexpected split set')
+              for entry in apks:
+                  target.joinpath(pathlib.PurePosixPath(entry.filename).name).write_bytes(archive.read(entry))
+          PYCODE
+            for apk in rednote-input/original/*.apk; do
+              apksigner verify "$apk" >/dev/null
+              echo "verified original split signature: $(basename "$apk")"
+            done
+          else
+            sudo apt-get install -y --no-install-recommends qemu-user
+            command -v qemu-x86_64
+
+            curl --fail --location --retry 2 --connect-timeout 20 --max-time 240 --speed-time 30 --speed-limit 1024 \
+              'https://dl.google.com/android/repository/build-tools_r35_linux.zip' \
+              --output "$RUNNER_TEMP/build-tools_r35_linux.zip"
+            echo 'bd3a4966912eb8b30ed0d00b0cda6b6543b949d5ffe00bea54c04c81e1561d88  '"$RUNNER_TEMP"'/build-tools_r35_linux.zip' | sha256sum --check
+            echo '2cfaa0bbb2336e9ec18ed3ecea84fa2e2af607bc  '"$RUNNER_TEMP"'/build-tools_r35_linux.zip' | sha1sum --check
+            mkdir -p "$RUNNER_TEMP/build-tools-extract" "$RUNNER_TEMP/android-sdk/build-tools"
+            unzip -q "$RUNNER_TEMP/build-tools_r35_linux.zip" -d "$RUNNER_TEMP/build-tools-extract"
+            mv "$RUNNER_TEMP/build-tools-extract/android-15" "$RUNNER_TEMP/android-sdk/build-tools/35.0.0"
+            grep -qx 'Pkg.Revision=35.0.0' "$RUNNER_TEMP/android-sdk/build-tools/35.0.0/source.properties"
+            export ANDROID_HOME="$RUNNER_TEMP/android-sdk"
+
+            mkdir -p "$RUNNER_TEMP/amd64-lists/partial" "$RUNNER_TEMP/amd64-debs" "$RUNNER_TEMP/amd64-root"
+            cat > "$RUNNER_TEMP/amd64.list" <<'APT'
+          deb [arch=amd64] https://archive.ubuntu.com/ubuntu noble main
+          deb [arch=amd64] https://archive.ubuntu.com/ubuntu noble-updates main
+          deb [arch=amd64] https://security.ubuntu.com/ubuntu noble-security main
+          APT
+            apt_opts=(
+              -o "Dir::Etc::sourcelist=$RUNNER_TEMP/amd64.list"
+              -o Dir::Etc::sourceparts=-
+              -o "Dir::State::lists=$RUNNER_TEMP/amd64-lists"
+              -o APT::Architecture=amd64
+              -o APT::Architectures=amd64
+            )
+            sudo apt-get update -qq "${apt_opts[@]}"
+            (cd "$RUNNER_TEMP/amd64-debs" && apt-get download "${apt_opts[@]}" libc6:amd64 libgcc-s1:amd64)
+            for deb in "$RUNNER_TEMP"/amd64-debs/*.deb; do
+              dpkg-deb -x "$deb" "$RUNNER_TEMP/amd64-root"
+            done
+            sysroot="$RUNNER_TEMP/amd64-root"
+            if [ ! -e "$sysroot/lib/x86_64-linux-gnu" ] && [ -d "$sysroot/usr/lib/x86_64-linux-gnu" ]; then
+              mkdir -p "$sysroot/lib"
+              ln -s ../usr/lib/x86_64-linux-gnu "$sysroot/lib/x86_64-linux-gnu"
+            fi
+            if [ -d "$sysroot/usr/lib/x86_64-linux-gnu" ]; then
+              mkdir -p "$sysroot/lib/x86_64-linux-gnu"
+              for library in ld-linux-x86-64.so.2 libc.so.6 libgcc_s.so.1; do
+                if [ ! -e "$sysroot/lib/x86_64-linux-gnu/$library" ] && [ -e "$sysroot/usr/lib/x86_64-linux-gnu/$library" ]; then
+                  ln -s "../../usr/lib/x86_64-linux-gnu/$library" "$sysroot/lib/x86_64-linux-gnu/$library"
+                fi
+              done
+            fi
+            if [ -L "$sysroot/lib64" ] && [ ! -e "$sysroot/lib64" ]; then rm "$sysroot/lib64"; fi
+            mkdir -p "$sysroot/lib64"
+            ln -sfn ../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 "$sysroot/lib64/ld-linux-x86-64.so.2"
+            test -e "$sysroot/lib64/ld-linux-x86-64.so.2"
+            test -e "$sysroot/lib/x86_64-linux-gnu/libc.so.6"
+            test -e "$sysroot/lib/x86_64-linux-gnu/libgcc_s.so.1"
+
+            export QEMU_SYSROOT="$sysroot"
+            cat > "$RUNNER_TEMP/aapt2-qemu" <<'WRAPPER'
+          #!/bin/sh
+          set -eu
+          exec qemu-x86_64 -L "$QEMU_SYSROOT" "$ANDROID_HOME/build-tools/35.0.0/aapt2" "$@"
+          WRAPPER
+            cat > "$RUNNER_TEMP/zipalign-qemu" <<'WRAPPER'
+          #!/bin/sh
+          set -eu
+          exec qemu-x86_64 -L "$QEMU_SYSROOT" "$ANDROID_HOME/build-tools/35.0.0/zipalign" "$@"
+          WRAPPER
+            chmod +x "$RUNNER_TEMP/aapt2-qemu" "$RUNNER_TEMP/zipalign-qemu"
+            export AAPT2="$RUNNER_TEMP/aapt2-qemu"
+            export ZIPALIGN="$RUNNER_TEMP/zipalign-qemu"
+            export APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+            "$AAPT2" version
+            zipalign_help="$("$ZIPALIGN" -h 2>&1 || true)"
+            echo "$zipalign_help" | grep -q -- '-P'
+
+            curl --fail --location --retry 2 --connect-timeout 20 --max-time 180 --speed-time 30 --speed-limit 1024 \
+              'https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar' \
+              --output bins/apkeditor.jar
+            echo 'a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67  bins/apkeditor.jar' | sha256sum --check
+            options=()
+            if [ "$TEST_VARIANT" = fold ]; then options+=(--fold-layout); fi
+            python3 build_rednote.py \
+              --input rednote-input/rednote.xapk \
+              --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0 \
+              --source 'https://apkpure.net/rednote-app/com.xingin.xhs/download' \
+              --application-id com.kirikira.rednote.fold \
+              --output output_apks/phone-test.apk --report "rednote-report/$TEST_VARIANT-build.json" "${options[@]}"
+            echo 'TEST_PACKAGE=com.kirikira.rednote.fold' >> "$GITHUB_ENV"
+          fi
 
       - name: Initialize official ARM64 Vanilla image and start headless Waydroid
         shell: bash
@@ -154,13 +285,8 @@ jobs:
 
           waydroid_ip=""
           adb_ready=false
-          for attempt in $(seq 1 60); do
-            if ! kill -0 "$supervisor_pid" 2>/dev/null; then break; fi
-            status_output="$(waydroid status 2>/dev/null || true)"
-            echo "Waydroid status poll $attempt:"
-            echo "$status_output"
-            waydroid_ip="$(echo "$status_output" | awk -F: '/IP address:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
-            if WAYDROID_IP="$waydroid_ip" python3 - <<'PYIP'
+          is_ipv4() {
+            WAYDROID_IP="${1:-}" python3 - <<'PYIP'
           import ipaddress, os, sys
           try:
               address = ipaddress.ip_address(os.environ.get("WAYDROID_IP", ""))
@@ -169,9 +295,22 @@ jobs:
           except ValueError:
               sys.exit(1)
           PYIP
-            then
+          }
+          for attempt in $(seq 1 60); do
+            if ! kill -0 "$supervisor_pid" 2>/dev/null; then break; fi
+            status_output="$(waydroid status 2>/dev/null || true)"
+            echo "Waydroid status poll $attempt:"
+            echo "$status_output"
+            waydroid_ip="$(echo "$status_output" | awk -F: '/IP address:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+            if ! is_ipv4 "$waydroid_ip"; then
+              echo "Waydroid status did not expose IPv4; checking the LXC lease address"
+              for lxc_ip in $(sudo lxc-info -P /var/lib/waydroid/lxc -n waydroid -iH 2>/dev/null || true); do
+                if is_ipv4 "$lxc_ip"; then waydroid_ip="$lxc_ip"; break; fi
+              done
+            fi
+            if is_ipv4 "$waydroid_ip"; then
               test_serial="$waydroid_ip:5555"
-              echo "Waydroid reported a valid IPv4 address: $waydroid_ip"
+              echo "Waydroid container IPv4 address: $waydroid_ip"
               adb connect "$test_serial" || true
               device_state="$(timeout 10 adb -s "$test_serial" get-state 2>/dev/null || true)"
               if [ "$device_state" = device ]; then adb_ready=true; break; fi
@@ -190,6 +329,7 @@ jobs:
           booted=""
           for attempt in $(seq 1 60); do
             booted="$(timeout 10 adb -s "$test_serial" shell getprop sys.boot_completed | tr -d '\r' || true)"
+            echo "Android boot poll $attempt sys.boot_completed=${booted:-<empty>}"
             if [ "$booted" = 1 ]; then break; fi
             sleep 5
           done
@@ -205,28 +345,15 @@ jobs:
           adb -s "$test_serial" shell service check package
           adb -s "$test_serial" shell service check activity
 
-      - name: Fetch pinned original XAPK, verify signature, and install native splits
+      - name: Install the selected original or rebuilt APK
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p rednote-input/original
-          curl --fail --location --retry 2 --connect-timeout 20 --max-time 180 --speed-time 30 --speed-limit 1024 'https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21' --output rednote-input/rednote.xapk
-          echo 'bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0  rednote-input/rednote.xapk' | sha256sum --check
-          python3 - <<'PYCODE'
-          import pathlib, zipfile
-          target = pathlib.Path('rednote-input/original')
-          with zipfile.ZipFile('rednote-input/rednote.xapk') as archive:
-              apks = [entry for entry in archive.infolist() if entry.filename.lower().endswith('.apk')]
-              if len(apks) != 3:
-                  raise SystemExit('Unexpected split set')
-              for entry in apks:
-                  target.joinpath(pathlib.PurePosixPath(entry.filename).name).write_bytes(archive.read(entry))
-          PYCODE
-          for apk in rednote-input/original/*.apk; do
-            apksigner verify "$apk" >/dev/null
-            echo "verified original split signature: $(basename "$apk")"
-          done
-          adb -s "$TEST_SERIAL" install-multiple rednote-input/original/*.apk
+          if [ "$TEST_VARIANT" = original ]; then
+            adb -s "$TEST_SERIAL" install-multiple rednote-input/original/*.apk
+          else
+            adb -s "$TEST_SERIAL" install output_apks/phone-test.apk
+          fi
 
       - name: Publish a preview before entering any account information
         shell: bash
@@ -377,6 +504,9 @@ jobs:
             tail -n 80 "$RUNNER_TEMP/waydroid-session-supervisor.log" 2>/dev/null || true
             tail -n 80 "$RUNNER_TEMP/weston.log" 2>/dev/null || true
             tail -n 80 "$RUNNER_TEMP/pulseaudio.log" 2>/dev/null || true
+            sudo timeout 20 waydroid shell getprop sys.boot_completed 2>/dev/null || true
+            sudo timeout 20 waydroid shell service check activity 2>/dev/null || true
+            sudo timeout 20 waydroid shell logcat -d -b crash -t 120 2>/dev/null || true
             sudo tail -n 240 /var/lib/waydroid/waydroid.log 2>/dev/null || true
             sudo journalctl --no-pager -u waydroid-container -n 100 2>/dev/null || true
             sudo lxc-info -P /var/lib/waydroid/lxc -n waydroid 2>/dev/null || true
