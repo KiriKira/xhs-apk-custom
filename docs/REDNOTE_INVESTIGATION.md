@@ -2,13 +2,13 @@
 
 ## 当前结论
 
-本次目标是迁移原项目已经能进入登录页的国内版 patch 流程到 REDnote，并测试修改版的手机号登录。此前的 `resigned`、`control`、`fold` 是不含生产签名兼容 helper 的对照组，不能作为完整迁移后的 patched REDnote 结论。用户指出这一遗漏后，新增可选 `--signature-compat`：迁移早期 Application hook、针对新包名生成 Java 查询 helper、使用当前 REDnote 输入证书，并保留生产 `XINGIN` v1 条目名。新变体为 `control-compat` / `fold-compat`，实际运行结果待测试。
+本次目标是迁移原项目已经能进入登录页的国内版 patch 流程到 REDnote，并测试修改版的手机号登录。此前的 `resigned`、`control`、`fold` 是不含生产签名兼容 helper 的对照组，不能作为完整迁移后的 patched REDnote 结论。用户指出这一遗漏后，新增可选 `--signature-compat`：迁移早期 Application hook、针对新包名生成 Java 查询 helper、使用当前 REDnote 输入证书，并保留生产 `XINGIN` v1 条目名。新变体为 `control-compat` / `fold-compat`。两组均已安装成功，helper 为 `installed`，到达确认 +86 的手机号表单且未检测到崩溃；上一轮未传入手机号而等待超时，本轮 fold-compat 已提交授权手机号并进入验证码页，用户确认收到短信；当前等待验证码验证最终登录。
 
 国内 production [build run 35478448978](https://github.com/KiriKira/xhs-apk-custom/actions/runs/35478448978) 使用 Coolapk `vc=9334801`，`build_xhs.py` 注入 `attachBaseContext` helper 并以 `XINGIN` 签名条目构建；其已验证构建步骤成功。国内 helper 的证书指纹为 `f375f0f6af7c94c364b35cd6f6a66d64aefae66e32f935b48773c0faad04c121`，本次 REDnote 输入为 `dbf2ddfe68dc6c3d7bdbd1c70aae13993f50fa99b51d6f0c668a284ee9e6fdcd`，因此不能直接照搬证书常量。用户提供的国内修改版能到登录页但被风控，作为用户设备观察记录；CI 构建成功本身不证明登录成功。
 
 主进程初始化兼容修复已在 commit [`ae7aef4`](https://github.com/KiriKira/xhs-apk-custom/commit/ae7aef4) 落盘，并已用于重建本地两种变体。此前 API 35 KVM smoke 中，原始包、换包名对照版和布局版均安装成功并进入隐私协议首屏，20 秒观察未检测到崩溃；这只能说明当时 x86_64 smoke 的首屏稳定性。
 
-原生 ARM Waydroid 的最新四组对照显示：原版 REDnote 在隐私流程后到达手机号登录表单且进程健康；原包名但仅重签的三 split 对照、换包名 control、fold 变体都在隐私操作后以 `SIGNALED` / status 6 退出。重签原包名对照的非签名 payload hashes 与官方 split 一致，因此新包名不是复现退出的必要条件；control 与 fold 同样退出，fold gate 也不是必要条件。这使签名/签名元数据或 APK 完整性相关启动差异成为候选，但目前没有 native backtrace 或 abort message，不能确认签名校验，更不能称为服务端风控。
+未带签名兼容处理的原生 ARM Waydroid 四组对照显示：原版 REDnote 在隐私流程后到达手机号登录表单且进程健康；原包名但仅重签的三 split 对照、换包名 control、fold 变体都在隐私操作后以 `SIGNALED` / status 6 退出。重签原包名对照的非签名 payload hashes 与官方 split 一致，因此新包名不是复现退出的必要条件；control 与 fold 同样退出，fold gate 也不是必要条件。这使签名/签名元数据或 APK 完整性相关启动差异成为候选，但目前没有 native backtrace 或 abort message，不能确认签名校验，更不能称为服务端风控。
 
 最新原版测试 [run 37614160907](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37614160907) 已确认 +86、实际输入用户授权的手机号、点击 Next 并进入验证码输入页；`phone_entered=true`、`get_code_clicked=true`、`otp_input_visible=true`，结果为 `otp_screen`，未检测到“环境不安全”提示。该轮未提交 OTP 或确认最终登录成功，验证码等待已超时结束；原版仅作为环境对照，不再请求原版验证码。这排除了“该环境中原版也一律在请求验证码前拒绝登录”的说法；并不证明后续验证一定成功。此前 helper 返回 welcome 或 country selector 未解决的轮次均没有输入号码或请求短信，不能当作服务器拒绝。
 
@@ -25,6 +25,8 @@ bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0
 三个输入 APK 的签名均通过 `apksigner` 验证，应用签名证书 SHA-256 相同：`dbf2ddfe68dc6c3d7bdbd1c70aae13993f50fa99b51d6f0c668a284ee9e6fdcd`。输入的 SourceStamp 证书 SHA-256 为 `3257d599a49d2c961a471ca9843f59d341a405884583fc087df4237b733bbd6d`。这只记录输入文件校验；重打包 APK 使用自定义签名，不能宣称保留了官方签名或 SourceStamp。
 
 ## 当前 APK 与静态验证
+
+当前完整迁移版本为 `output_apks/rednote-9.48.1-fold-compat.apk`，包名 `com.kirikira.rednote.fold`，本地产物 SHA-256 `40a16edf486b76cbe0f084e42d9fb7037af29779816f3b99fe608f7c4b07ca41`。它包含原生产签名查询 helper 的迁移版本及两个布局 gate。编译后 DEX 检查确认 `classes17.dex` 中 `XhsApplication.attachBaseContext` 首条调用 `SignatureSpoof.install()`，新增 `classes22.dex` 中目标包名和源证书匹配；实际 APK signer 仍是仓库测试证书 `637c226c...a088b4`。26,447 个基线条目哈希未变，仅 manifest、classes17、classes4 被修改，额外增加 helper DEX。12 项测试通过；本地与 hosted 构建的 ZIP 字节哈希不同，运行证据对应 hosted 产物 `09ddb1df1c2f83b0bdf6f0510132e2c2033b9e9c0e6dfee01d3f3bb3f29236cb`，两者使用同一输入与构建配置，不宣称字节完全相同。
 
 当前 [`output_apks/SHA256SUMS`](../output_apks/SHA256SUMS) 已更新为包含 commit `ae7aef4` 主进程兼容修复的两种 APK 哈希。两个克隆变体均使用 `com.kirikira.rednote.fold`，比较时需先卸载前一个变体。
 
@@ -52,6 +54,15 @@ bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0
 | 改包名 control、原生 ARM Waydroid | [run 37611443776](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37611443776)：隐私操作后以 `SIGNALED` / status 6 退出；未取得 native frames 或 abort message。 | 未输入号码或请求短信。 |
 | 改包名 fold、原生 ARM Waydroid | [run 37611440851](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37611440851)：与 control 一样退出，未取得 native frames 或 abort message。 | 未输入号码或请求短信。 |
 
+迁移签名兼容后的两组结果：
+
+| 完整修改版 | 原生 ARM 实际观察 | 手机号提交 |
+| --- | --- | --- |
+| control-compat | [run 37621657993](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37621657993)：PID 4053；helper installed；+86 手机号表单；未检测到崩溃。 | 该轮手机号传入等待超时，未提交号码。 |
+| fold-compat | [run 37621661801](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37621661801)：PID 4312；helper installed；+86 手机号表单；未检测到崩溃。 | 该轮手机号传入等待超时；[run 37636029064](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37636029064) 已确认 +86、输入授权手机号并点击 Next，进入验证码页；用户确认收到短信。尚未提交 OTP 或确认最终登录。 |
+
+同一 REDnote 输入和克隆包名下，新增生产签名兼容处理后恢复到登录表单，说明此前缺少该处理的对照结果不能代表完整 patched 版。fold-compat 的实际手机号提交已进入验证码页且用户确认收到短信，未检测到环境不安全提示；最终登录结果仍待 OTP 验证。
+
 原包名重签组与两个克隆组在原生 ARM 中均发生同类退出，说明包名改写不是该退出的必要条件；control 与 fold 结果相同，也不支持 fold gate 为必要原因。当前仍无法区分实际 signer、SourceStamp/签名元数据、APK 完整性检查或其他启动差异。`SIGNALED` / status 6 只表明信号退出，缺少 native frames 和 abort message 时不应给出根因。
 
 此前 API 30/35 x86_64 结果仍应单独看待：部分深度预览的栈含 `libndk_translation.so`，但原生 ARM 的重签组也退出，因此 native bridge 不是目前这些结果的必要解释。原版 stock 窗口 1080×1920 / density 420 时欢迎按钮完整显示；PHONE 48dp 行在旧的小 letterbox 窗口中只露出约 3px，而静态源码确认该行是本地无条件构造。这是窗口裁剪/布局表现，不是服务端响应或登录验证。
@@ -73,3 +84,7 @@ bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0
 原项目 `signature_spoof_experiment.py` 的兼容 helper 钩住应用进程中的 `PackageInfo.CREATOR`，并替换兼容 Java 查询可见的 `PackageInfo.signatures` / `SigningInfo` 值。其目标包名硬编码为 `com.xingin.xhs`；它不会改变 Android 实际安装 signer，也不能代表 native 校验或 REDnote 克隆包。Morphe 的 [Reddit signature patch](https://github.com/MorpheApp/morphe-patches/blob/main/extensions/reddit/src/main/java/app/morphe/extension/reddit/patches/SpoofSignaturePatch.java) 是同类进程内 Java 查询兼容示例，不能视为 native 或服务端检查的证据。详见本仓库 [signature/integrity notes](SIGNATURE_PROTECTION.md)。
 
 在所查 Morphe 源码和 issue、ReVanced patches issue 中，没有搜到 REDnote / 小红书专用 patch 或明确报告“environment is unsafe”。这只说明本次公开仓库检索范围；ReVanced 原仓库受 [GitHub DMCA 下架](https://github.com/github/dmca/blob/master/2026/03/2026-03-12-morpheapp.md)影响，不能据零搜索结果断言全网不存在相关记录。
+
+## 国内版 Actions 中的登录风险线索
+
+main 的 [run 35648047022](https://github.com/KiriKira/xhs-apk-custom/actions/runs/35648047022) 和 [run 35621268433](https://github.com/KiriKira/xhs-apk-custom/actions/runs/35621268433) 使用国内 Coolapk vcode 9334801，仅执行静态分析。可见报告包含账号模型的 `risk_frozen`、`need_verify_id`、`login_exp_map`、`state_token`，以及 `asyncLoadSecuritySo`、`security_so_info`、`FingerPrintTask`、`SecurityTask`。这些是后续观测线索，不是实际服务端响应或数值错误码。完整 artifact 已超过七天保留期，日志只保留报告前 120,000 字符，不能从后续章节缺失推断 native 检查内容。输入 REDnote 的 apksig 查询 `SigningCertificateLineage` 返回 null，源 APK 没有包含国内证书 f375 的轮换链；迁移 helper 使用本次输入 dbf2 证书。

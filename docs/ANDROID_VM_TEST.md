@@ -4,7 +4,7 @@
 
 ## 当前测试状态
 
-此前三个非原版变体是未迁移生产签名兼容 helper 的启动对照，不能代表完整国内版 patch 流程。后续 `control-compat` / `fold-compat` 迁移 production Application hook、改为 REDnote 输入证书及克隆包名，并保留 `XINGIN` v1 条目名，单独记录构建与实际登录结果。
+此前三个非原版变体是未迁移生产签名兼容 helper 的启动对照，不能代表完整国内版 patch 流程。后续 `control-compat` / `fold-compat` 迁移 production Application hook、改为 REDnote 输入证书及克隆包名，并保留 `XINGIN` v1 条目名，单独记录构建与实际登录结果。两组最新预览均已到 +86 表单且 helper installed，无崩溃；首次手机号传入等待超时，run 37636029064 的 fold-compat 已实际提交手机号、进入验证码页且用户确认收到短信；当前未验证 OTP/最终登录。
 
 当前测试使用 APKPure 分发的 REDnote `9.48.1` XAPK（SHA-256 `bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0`），不是从 Google Play 直接导出的 APK。XAPK 原始包、两个 split 和构建报告的来源信息见仓库 `output_apks/*build-report.json`。
 

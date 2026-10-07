@@ -49,8 +49,11 @@ The persistent test signing key is kept in `ks_pkcs12.keystore` so future custom
 `build_rednote.py` is an independent builder for a locally supplied APK or complete
 XAPK set. It verifies the expected input SHA-256 and APK member signatures, merges
 XAPK splits when needed, changes the applicationId for a separate install, and
-optionally applies the two existing layout gates. It does not inject the production
-signature-spoof helper. Original production builds remain on `build_xhs.py`.
+optionally applies the two existing layout gates. `--signature-compat` ports the
+production Application hook and Java signature-query helper to the new package
+and the verified REDnote input certificate, with the `XINGIN` v1 entry name.
+The Android-installed signer remains the repository test key. Original production
+builds remain on `build_xhs.py`.
 
 The downloaded diagnostic input is APKPure REDnote 9.48.1 / 9481803, ARM64. Google
 Play also uses `com.xingin.xhs`; a matching package name alone does not establish
@@ -62,7 +65,12 @@ crash during a 20-second observation. Deeper x86 previews encountered native
 crashes before the phone form. Native ARM64 Waydroid comparisons found startup
 exits in the re-sign-only, renamed control and layout variants. The original
 accepted an authorized +86 phone submission and reached the SMS-code page without
-an unsafe-environment prompt; OTP verification and final login remain pending. See the
+an unsafe-environment prompt; that control run ended without OTP verification.
+The earlier non-original runs omitted the production helper; separate
+`control-compat` / `fold-compat` runs test the complete migrated patch path and
+both reached the phone form without a detected crash. `fold-compat` submitted an
+authorized +86 number, reached the code page, and the user confirmed receiving
+the SMS; final login still requires OTP verification. See the
 [runtime evidence](docs/ANDROID_VM_TEST.md) for the limits of these results.
 
 With Java 21, APKEditor in `bins/apkeditor.jar`, Python 3.10+, and Android build-tools
@@ -75,9 +83,9 @@ python build_rednote.py \
   --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0 \
   --source https://apkpure.net/rednote-app/com.xingin.xhs/download \
   --application-id com.kirikira.rednote.fold \
-  --fold-layout \
-  --output output_apks/rednote-9.48.1-fold-custom.apk \
-  --report output_apks/rednote-9.48.1-fold-build-report.json
+  --fold-layout --signature-compat \
+  --output output_apks/rednote-9.48.1-fold-compat.apk \
+  --report output_apks/rednote-9.48.1-fold-compat-build-report.json
 ```
 
 Omit `--fold-layout` to create the renamed control. Use the SHA-256 of your actual
