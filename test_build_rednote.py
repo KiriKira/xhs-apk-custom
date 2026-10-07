@@ -27,23 +27,38 @@ class ManifestTransformTests(unittest.TestCase):
               </queries>
               <uses-permission android:name="{OLD_PACKAGE}.permission.CUSTOM" />
               <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="{OLD_PACKAGE}.manual.dump" />
+              <uses-permission android:name="{{applicationId}}.gcm.permission.C2D_MESSAGE" />
+              <uses-permission android:name="vendor.sdk.permission.OWNED" />
+              <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
+              <permission android:name="{OLD_PACKAGE}.permission.CUSTOM" />
               <permission android:name="{OLD_PACKAGE}.permission.DEFINED"
                   android:permissionGroup="{OLD_PACKAGE}.permission.GROUP" />
+              <permission-group android:name="{OLD_PACKAGE}.permission.GROUP" />
+              <permission android:name="{{applicationId}}.gcm.permission.C2D_MESSAGE" />
+              <permission android:name="vendor.sdk.permission.OWNED" />
               <application android:name=".App" android:backupAgent="BackupAgent">
                 <activity android:name="MainActivity" android:parentActivityName=".Parent" />
                 <activity-alias android:name=".Alias" android:targetActivity=".MainActivity" />
-                <service android:name="{OLD_PACKAGE}.Service">
+                <service android:name="{OLD_PACKAGE}.Service"
+                    android:permission="{OLD_PACKAGE}.permission.CUSTOM">
                   <intent-filter><action android:name="{OLD_PACKAGE}.ACTION_KEEP" /></intent-filter>
                 </service>
                 <provider android:name="FileProvider"
                     android:authorities="{OLD_PACKAGE}.files;legacy.sdk.authority"
-                    android:permission="{OLD_PACKAGE}.permission.CUSTOM" />
+                    android:permission="{OLD_PACKAGE}.permission.CUSTOM"
+                    android:readPermission="{{applicationId}}.gcm.permission.C2D_MESSAGE"
+                    android:writePermission="vendor.sdk.permission.OWNED" />
+                <receiver android:name=".SdkReceiver"
+                    android:permission="{OLD_PACKAGE}.qmethod.permission.pandoraex" />
               </application>
             </manifest>'''
         )
 
     def test_rebases_package_components_permissions_and_real_provider_authorities(self):
-        old, changes, warnings = transform_manifest(self.root, NEW_PACKAGE)
+        old, changes, warnings, permission_audit = transform_manifest(
+            self.root, NEW_PACKAGE
+        )
         self.assertEqual(old, OLD_PACKAGE)
         self.assertEqual(self.root.get("package"), NEW_PACKAGE)
 
@@ -64,18 +79,40 @@ class ManifestTransformTests(unittest.TestCase):
             OLD_PACKAGE + ".ACTION_KEEP",
         )
 
-        uses_permission = self.root.find("uses-permission")
-        self.assertEqual(
-            uses_permission.get(ANDROID + "name"), NEW_PACKAGE + ".permission.CUSTOM"
+        uses_permissions = {
+            item.get(ANDROID + "name") for item in self.root.findall("uses-permission")
+        }
+        self.assertIn(NEW_PACKAGE + ".permission.CUSTOM", uses_permissions)
+        self.assertIn("android.permission.INTERNET", uses_permissions)
+        self.assertIn(OLD_PACKAGE + ".manual.dump", uses_permissions)
+        self.assertIn(
+            NEW_PACKAGE + ".gcm.permission.C2D_MESSAGE", uses_permissions
         )
-        internet = list(self.root.findall("uses-permission"))[1]
-        self.assertEqual(internet.get(ANDROID + "name"), "android.permission.INTERNET")
-        definition = self.root.find("permission")
+        self.assertIn(
+            NEW_PACKAGE + ".clone.vendor.sdk.permission.OWNED", uses_permissions
+        )
+        self.assertIn("com.google.android.gms.permission.AD_ID", uses_permissions)
+        definition = next(
+            item
+            for item in self.root.findall("permission")
+            if item.get(ANDROID + "name") == NEW_PACKAGE + ".permission.DEFINED"
+        )
         self.assertEqual(
             definition.get(ANDROID + "name"), NEW_PACKAGE + ".permission.DEFINED"
         )
         self.assertEqual(
             definition.get(ANDROID + "permissionGroup"), NEW_PACKAGE + ".permission.GROUP"
+        )
+        declared_group = self.root.find("permission-group")
+        self.assertEqual(
+            declared_group.get(ANDROID + "name"), NEW_PACKAGE + ".permission.GROUP"
+        )
+        self.assertTrue(
+            any(
+                item.get(ANDROID + "name")
+                == NEW_PACKAGE + ".gcm.permission.C2D_MESSAGE"
+                for item in self.root.findall("permission")
+            )
         )
 
         query_provider = self.root.find("queries/provider")
@@ -88,8 +125,57 @@ class ManifestTransformTests(unittest.TestCase):
         self.assertEqual(
             real_provider.get(ANDROID + "permission"), NEW_PACKAGE + ".permission.CUSTOM"
         )
+        self.assertEqual(
+            real_provider.get(ANDROID + "readPermission"),
+            NEW_PACKAGE + ".gcm.permission.C2D_MESSAGE",
+        )
+        self.assertEqual(
+            real_provider.get(ANDROID + "writePermission"),
+            NEW_PACKAGE + ".clone.vendor.sdk.permission.OWNED",
+        )
+        service = application.find("service")
+        self.assertEqual(
+            service.get(ANDROID + "permission"), NEW_PACKAGE + ".permission.CUSTOM"
+        )
+        sdk_receiver = application.find("receiver")
+        self.assertEqual(
+            sdk_receiver.get(ANDROID + "permission"),
+            OLD_PACKAGE + ".qmethod.permission.pandoraex",
+        )
         self.assertTrue(any("hard-coded content URIs" in warning for warning in warnings))
         self.assertTrue(any(item["field"] == "manifest.package" for item in changes))
+        self.assertTrue(
+            any("without a matching app declaration were preserved" in warning for warning in warnings)
+        )
+        audit_by_source = {
+            item["sourceName"]: item
+            for item in permission_audit["clonedDeclarations"]
+        }
+        self.assertEqual(
+            audit_by_source["{applicationId}.gcm.permission.C2D_MESSAGE"]["cloneName"],
+            NEW_PACKAGE + ".gcm.permission.C2D_MESSAGE",
+        )
+        placeholder_refs = audit_by_source[
+            "{applicationId}.gcm.permission.C2D_MESSAGE"
+        ]["updatedReferences"]
+        self.assertEqual(
+            {(item["element"], item["attribute"]) for item in placeholder_refs},
+            {
+                ("uses-permission", "android:name"),
+                (
+                    f"provider[android:name={OLD_PACKAGE}.FileProvider]",
+                    "android:readPermission",
+                ),
+            },
+        )
+        self.assertIn(
+            {
+                "element": "uses-permission",
+                "attribute": "android:name",
+                "value": OLD_PACKAGE + ".manual.dump",
+            },
+            permission_audit["unmodifiedPackageScopedReferences"],
+        )
 
     def test_split_and_required_split_manifests_are_rejected(self):
         for xml in (

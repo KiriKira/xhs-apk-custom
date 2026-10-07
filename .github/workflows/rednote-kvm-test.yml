@@ -119,12 +119,12 @@ jobs:
             --input rednote-input/rednote.xapk \
             --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0 \
             --source 'https://apkpure.net/rednote-app/com.xingin.xhs/download' \
-            --output output_apks/rednote-control.apk
+            --output output_apks/rednote-control.apk --report rednote-report/control-build.json
           python3 build_rednote.py \
             --input rednote-input/rednote.xapk \
             --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0 \
             --source 'https://apkpure.net/rednote-app/com.xingin.xhs/download' \
-            --fold-layout --output output_apks/rednote-fold.apk
+            --fold-layout --output output_apks/rednote-fold.apk --report rednote-report/fold-build.json
 
       - name: Install and launch three variants without account information
         shell: bash

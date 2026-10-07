@@ -59,6 +59,11 @@ PERMISSION_NAME_TAGS = {
     "uses-permission-sdk-34",
     "uses-permission-sdk-35",
 }
+PERMISSION_DECLARATION_TAGS = {
+    "permission",
+    "permission-group",
+    "permission-tree",
+}
 PERMISSION_REFERENCE_ATTRS = {
     "permission",
     "readPermission",
@@ -473,6 +478,35 @@ def _rebase_package_prefix(value: str, old_package: str, new_package: str) -> st
     return None
 
 
+def _clone_declared_permission_name(
+    value: str, old_package: str, new_package: str
+) -> str:
+    """Give a permission declared by this app a clone-specific global name.
+
+    The source Rednote manifest contains the literal ``{applicationId}``
+    token in one declared permission. Only that token is expanded here because
+    it is confirmed in the source artifact; unrelated manifest placeholders and
+    resource references are not interpreted.
+    """
+    if not value or value.startswith(("@", "?")):
+        raise BuildError(
+            f"Cannot safely clone app-declared permission name {value!r}; "
+            "expected a literal manifest name"
+        )
+
+    application_id_token = "{applicationId}"
+    if value == application_id_token or value.startswith(application_id_token + "."):
+        return new_package + value[len(application_id_token) :]
+
+    rebased = _rebase_package_prefix(value, old_package, new_package)
+    if rebased is not None:
+        return rebased
+
+    # A declaration itself is evidence that the app owns the permission even
+    # when a bundled SDK chose a name outside the app's original package.
+    return f"{new_package}.clone.{value}"
+
+
 def _description(element: ET.Element) -> str:
     tag = _local_name(element.tag)
     name = _attr(element, "name")
@@ -491,7 +525,7 @@ def _register_xml_namespaces(xml_bytes: bytes) -> None:
 
 def transform_manifest(
     root: ET.Element, new_package: str
-) -> tuple[str, list[dict[str, str]], list[str]]:
+) -> tuple[str, list[dict[str, str]], list[str], dict[str, Any]]:
     old_package = root.get("package")
     if not old_package:
         raise BuildError("Decoded manifest has no package attribute")
@@ -589,19 +623,38 @@ def transform_manifest(
             if before != after:
                 provider.set(key, after)
 
-    permission_names_changed = False
+    permission_clone_map: dict[str, str] = {}
+    permission_audit_by_name: dict[str, dict[str, Any]] = {}
+    unmodified_package_scoped_references: list[dict[str, str]] = []
+
+    # A declaration is the ownership evidence for a custom permission. Clone
+    # only those names, then update references by exact source-name match. This
+    # avoids rewriting system or SDK permissions that the app merely requests.
     for element in list(root):
         tag = _local_name(element.tag)
-        if tag not in PERMISSION_NAME_TAGS and not tag.startswith("uses-permission-sdk-"):
+        if tag not in PERMISSION_DECLARATION_TAGS:
             continue
         key = ANDROID + "name"
         before = element.get(key)
         if before is None:
             continue
-        after = _rebase_package_prefix(before, old_package, new_package)
-        if after is not None and after != before:
+        if before.startswith("android."):
+            # Platform namespace declarations are not app-owned custom
+            # permissions and must not be rebound by a clone.
+            continue
+        after = _clone_declared_permission_name(before, old_package, new_package)
+        permission_clone_map.setdefault(before, after)
+        permission_audit_by_name.setdefault(
+            before,
+            {
+                "declarationTag": tag,
+                "sourceName": before,
+                "cloneName": after,
+                "updatedReferences": [],
+            },
+        )
+        if after != before:
             element.set(key, after)
-            permission_names_changed = True
             changes.append(
                 {
                     "entry": "AndroidManifest.xml",
@@ -611,15 +664,43 @@ def transform_manifest(
                 }
             )
 
+    for element in list(root):
+        tag = _local_name(element.tag)
+        if tag not in PERMISSION_NAME_TAGS and not tag.startswith("uses-permission-sdk-"):
+            continue
+        if tag in PERMISSION_DECLARATION_TAGS:
+            continue
+        key = ANDROID + "name"
+        before = element.get(key)
+        if before is None:
+            continue
+        after = permission_clone_map.get(before)
+        if after is not None and after != before:
+            element.set(key, after)
+            changes.append(
+                {
+                    "entry": "AndroidManifest.xml",
+                    "field": f"{tag}@android:name",
+                    "from": before,
+                    "to": after,
+                }
+            )
+            permission_audit_by_name[before]["updatedReferences"].append(
+                {"element": tag, "attribute": "android:name"}
+            )
+        elif _rebase_package_prefix(before, old_package, new_package) is not None:
+            unmodified_package_scoped_references.append(
+                {"element": tag, "attribute": "android:name", "value": before}
+            )
+
     for element in root.iter():
         for key, before in list(element.attrib.items()):
             attr_name = _local_name(key)
             if attr_name not in PERMISSION_REFERENCE_ATTRS:
                 continue
-            after = _rebase_package_prefix(before, old_package, new_package)
+            after = permission_clone_map.get(before)
             if after is not None and after != before:
                 element.set(key, after)
-                permission_names_changed = True
                 changes.append(
                     {
                         "entry": "AndroidManifest.xml",
@@ -628,12 +709,35 @@ def transform_manifest(
                         "to": after,
                     }
                 )
+                permission_audit_by_name[before]["updatedReferences"].append(
+                    {
+                        "element": _description(element),
+                        "attribute": f"android:{attr_name}",
+                    }
+                )
+            elif _rebase_package_prefix(before, old_package, new_package) is not None:
+                unmodified_package_scoped_references.append(
+                    {
+                        "element": _description(element),
+                        "attribute": f"android:{attr_name}",
+                        "value": before,
+                    }
+                )
 
-    if permission_names_changed:
+    if permission_audit_by_name:
         warnings.append(
-            "Manifest custom permission names were rebased; compiled DEX/native permission literals were not rewritten and may need a separate compatibility review."
+            "App-declared custom permissions were assigned clone-specific names and exact manifest references were updated; compiled DEX/native permission literals were not rewritten."
         )
-    return old_package, changes, warnings
+    if unmodified_package_scoped_references:
+        warnings.append(
+            "Old-package-prefixed permission references without a matching app declaration were preserved; see permissionCloneAudit.unmodifiedPackageScopedReferences."
+        )
+    permission_clone_audit = {
+        "policy": "Rename app-declared custom permissions only; update uses-permission and component permission attributes on exact name matches.",
+        "clonedDeclarations": list(permission_audit_by_name.values()),
+        "unmodifiedPackageScopedReferences": unmodified_package_scoped_references,
+    }
+    return old_package, changes, warnings, permission_clone_audit
 
 
 def find_smali_class(decoded_dir: Path, class_name: str) -> Path:
@@ -1093,7 +1197,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             reject_split_manifest(manifest_root, "APKEditor merged XAPK")
 
         _register_xml_namespaces(manifest_path.read_bytes())
-        old_package, manifest_changes, warnings = transform_manifest(
+        old_package, manifest_changes, warnings, permission_clone_audit = transform_manifest(
             manifest_root, application_id
         )
         manifest_tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
@@ -1226,6 +1330,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             },
             "modifiedEntries": sorted(changed_entries),
             "manifestChanges": manifest_changes,
+            "permissionCloneAudit": permission_clone_audit,
             "signatureCleanup": signature_cleanup,
             "payloadHashAudit": payload_check,
             "warnings": sorted(set(warnings)),

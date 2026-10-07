@@ -335,6 +335,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validation_failures(variants: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    failures = []
+    for item in variants:
+        reasons = []
+        if item.get("install_succeeded") is not True:
+            reasons.append("install_not_succeeded")
+        if item.get("installed") is not True:
+            reasons.append("not_installed")
+        launch = item.get("launch")
+        if not isinstance(launch, dict) or launch.get("actual_result") != "started":
+            reasons.append("launch_not_started")
+        if not item.get("app_pid"):
+            reasons.append("end_pid_missing")
+        if item.get("crash_summary", {}).get("detected") is True:
+            reasons.append("crash_detected")
+        if reasons:
+            failures.append({"name": item.get("name", "unknown"), "reasons": reasons})
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     base = args.base_dir.resolve()
@@ -407,13 +427,13 @@ def main(argv: list[str] | None = None) -> int:
 
     report["finished_at"] = now_utc()
     report["report_path"] = str(report_path)
+    failures = validation_failures(report["variants"])
+    report["validation"] = {"passed": not failures, "failed_variants": failures}
     write_report()
-    print(json.dumps({"report": str(report_path), "variants": [
-        {"name": item["name"], "installed": item["installed"],
-         "launch_result": item["launch"].get("actual_result"), "app_pid": item["app_pid"],
-         "crash_detected": item["crash_summary"]["detected"]}
-        for item in report["variants"]
-    ]}, ensure_ascii=False))
+    print(json.dumps({"report": str(report_path), "validation": report["validation"]}, ensure_ascii=False))
+    if failures:
+        print("Emulator smoke validation failed; evidence report saved.", file=sys.stderr)
+        return 1
     return 0
 
 
