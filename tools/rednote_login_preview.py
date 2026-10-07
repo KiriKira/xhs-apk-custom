@@ -242,7 +242,7 @@ def run(serial, package):
                 report.update(result_category="timeout" if timed else "launch_failed", timeout=timed)
             else:
                 clicked, notification_dismissed, relaunched = set(), False, False
-                country_opened = country_searched = False
+                country_opened = country_searched = country_search_opened = False
                 country_scrolls = 0
                 navigation_deadline = deadline - CAPTURE_RESERVE_SECONDS
                 adb.deadline = navigation_deadline
@@ -322,7 +322,10 @@ def run(serial, package):
                         report["steps"].append({"step": "open_country_selector"})
                         continue
                     if country_opened and not phone_field:
-                        did_click, label, count = scoped_action(adb, root, package, ui.COUNTRY_NAMES)
+                        # The global picker may label China differently; its calling code is stable.
+                        did_click, label, count = scoped_action(adb, root, package, ("+86",), preferred=True)
+                        if count == 0:
+                            did_click, label, count = scoped_action(adb, root, package, ui.COUNTRY_NAMES)
                         if count > 1:
                             report["result_category"] = "ambiguous_country_selector"
                             break
@@ -330,6 +333,15 @@ def run(serial, package):
                             report["steps"].append({"step": "select_country", "label": label})
                             continue
                         searches = ui.fields(root, ("search", "country", "region"), package=package)
+                        if not searches and not country_search_opened:
+                            did_click, label, count = scoped_action(adb, root, package, ("Search",))
+                            if count > 1:
+                                report["result_category"] = "ambiguous_country_search"
+                                break
+                            if did_click:
+                                country_search_opened = True
+                                report["steps"].append({"step": "open_country_search"})
+                                continue
                         if len(searches) == 1 and not country_searched:
                             if adb.tap(searches[0].attrib.get("bounds")):
                                 ok, _, _ = adb.run("shell", "input", "text", "China", timeout=8)
@@ -340,12 +352,12 @@ def run(serial, package):
                         lists = [n for n in root.iter() if ui.visible(n)
                                  and n.attrib.get("package") == package
                                  and n.attrib.get("scrollable") == "true"]
-                        if len(lists) == 1 and country_scrolls < 4:
+                        if len(lists) == 1 and country_scrolls < 8:
                             bounds = ui.BOUNDS.fullmatch(lists[0].attrib.get("bounds", ""))
                             if bounds:
                                 x1, y1, x2, y2 = map(int, bounds.groups())
                                 ok, _, _ = adb.run("shell", "input", "swipe", str((x1+x2)//2),
-                                                   str(y2-40), str(y1+40), "400", timeout=8)
+                                                   str(y2-40), str((y1+y2)//2), "400", timeout=8)
                                 if ok:
                                     country_scrolls += 1
                                     report["steps"].append({"step": "scroll_country_list"})
