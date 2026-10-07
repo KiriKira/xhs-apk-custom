@@ -454,7 +454,7 @@ jobs:
           from rednote_private_input import api
           rid = os.environ['GITHUB_RUN_ID']
           preview = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'rednote-preview.json').read_text())
-          ready = preview.get('phone_form_visible') is True and bool(preview.get('app_pid')) and preview.get('result_category') in ('phone_login_form', 'phone_country_code_visible')
+          ready = preview.get('phone_form_visible') is True and preview.get('country_confirmed') is True and bool(preview.get('app_pid')) and preview.get('result_category') in ('phone_login_form', 'phone_country_code_visible')
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write(f"PREVIEW_READY={'true' if ready else 'false'}\n")
           if not ready:

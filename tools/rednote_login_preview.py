@@ -13,7 +13,7 @@ import rednote_emulator_smoke as smoke
 import rednote_phone_test as ui
 
 
-PREVIEW_SECONDS = 135
+PREVIEW_SECONDS = 180
 CAPTURE_RESERVE_SECONDS = 60
 PHONE_DIRECT = ("其他手机号登录", "其他手机号码登录", "手机号登录", "手机号码登录", "手机号登陆",
                 "phone number login", "log in with phone", "use phone number",
@@ -242,6 +242,8 @@ def run(serial, package):
                 report.update(result_category="timeout" if timed else "launch_failed", timeout=timed)
             else:
                 clicked, notification_dismissed, relaunched = set(), False, False
+                country_opened = country_searched = False
+                country_scrolls = 0
                 navigation_deadline = deadline - CAPTURE_RESERVE_SECONDS
                 adb.deadline = navigation_deadline
                 while time.monotonic() < navigation_deadline:
@@ -309,10 +311,53 @@ def run(serial, package):
                         break
                     report["foreign_ui_package"] = None
 
-                    # The preview ends at a clearly identified phone field or country code.
+                    # Select the user's requested +86 while this is still account-free.
                     phone_field, has_country_code = phone_form_indicators(root, package)
+                    if phone_field and ui.country_state(root, package) == "other" and not country_opened:
+                        targets = ui.code_targets(root, package)
+                        if len(targets) != 1 or not adb.tap(targets[0].attrib.get("bounds")):
+                            report["result_category"] = "country_selector_unresolved"
+                            break
+                        country_opened = True
+                        report["steps"].append({"step": "open_country_selector"})
+                        continue
+                    if country_opened and not phone_field:
+                        did_click, label, count = scoped_action(adb, root, package, ui.COUNTRY_NAMES)
+                        if count > 1:
+                            report["result_category"] = "ambiguous_country_selector"
+                            break
+                        if did_click:
+                            report["steps"].append({"step": "select_country", "label": label})
+                            continue
+                        searches = ui.fields(root, ("search", "country", "region"), package=package)
+                        if len(searches) == 1 and not country_searched:
+                            if adb.tap(searches[0].attrib.get("bounds")):
+                                ok, _, _ = adb.run("shell", "input", "text", "China", timeout=8)
+                                if ok:
+                                    country_searched = True
+                                    report["steps"].append({"step": "search_country", "label": "China"})
+                                    continue
+                        lists = [n for n in root.iter() if ui.visible(n)
+                                 and n.attrib.get("package") == package
+                                 and n.attrib.get("scrollable") == "true"]
+                        if len(lists) == 1 and country_scrolls < 4:
+                            bounds = ui.BOUNDS.fullmatch(lists[0].attrib.get("bounds", ""))
+                            if bounds:
+                                x1, y1, x2, y2 = map(int, bounds.groups())
+                                ok, _, _ = adb.run("shell", "input", "swipe", str((x1+x2)//2),
+                                                   str(y2-40), str(y1+40), "400", timeout=8)
+                                if ok:
+                                    country_scrolls += 1
+                                    report["steps"].append({"step": "scroll_country_list"})
+                                    continue
+                        report["result_category"] = "country_selector_unresolved"
+                        break
+                    if phone_field and ui.country_state(root, package) != "cn":
+                        report["result_category"] = "phone_country_unconfirmed"
+                        break
                     if phone_field or has_country_code:
                         report["phone_form_visible"] = True
+                        report["country_confirmed"] = ui.country_state(root, package) == "cn"
                         report["result_category"] = "phone_login_form" if phone_field else "phone_country_code_visible"
                         break
 

@@ -11,7 +11,7 @@ REMOTE_XML = "/data/local/tmp/rednote-phone-test-ui.xml"
 PHONE_RE = re.compile(r"\+861[3-9]\d{9}\Z")
 BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 PHONE_HINTS = ("手机号", "手机号码", "电话号码", "phone number", "mobile number", "phone", "mobile")
-OTP_HINTS = ("验证码", "短信码", "verification code", "sms code", "otp")
+OTP_HINTS = ("验证码", "短信码", "verification code", "sms code", "otp", "editcode", "verify_code")
 PRIVACY = ("隐私政策", "用户协议", "个人信息保护", "privacy policy", "terms of service")
 UNSAFE = ("环境不安全", "环境异常", "设备环境异常", "设备环境不安全", "环境风险",
           "unsafe environment", "abnormal environment", "environment is unsafe",
@@ -20,7 +20,7 @@ CHALLENGE = ("安全验证", "风险验证", "安全风险", "存在风险", "�
 CAPTCHA = ("人机验证", "滑动验证", "图形验证", "captcha", "complete the verification")
 AGREE = ("同意并继续", "同意并使用", "同意", "接受", "agree", "accept")
 PHONE_LOGIN = ("其他手机号登录", "其他手机号码登录", "手机号登录", "手机号码登录", "手机号登陆",
-               "phone number login", "log in with phone", "use phone number")
+               "phone number login", "log in with phone", "use phone number", "continue with phone number")
 GET_CODE = ("获取验证码", "发送验证码", "next", "get code")
 COUNTRY_NAMES = ("中国", "中国大陆", "china", "mainland china", "中国(+86)", "中国 +86", "china (+86)", "china +86")
 TERMS = ("用户协议", "隐私政策", "服务条款", "terms", "privacy policy")
@@ -130,6 +130,28 @@ def load_phone(path):
     phone = data.get("phone") if isinstance(data, dict) else None
     if not isinstance(phone, str) or not PHONE_RE.fullmatch(phone): raise ValueError
     return phone[3:]
+def legacy_overseas_phone_form(root, package):
+    """Identify the observed international form without relying on generic Next buttons."""
+    nodes = [n for n in root.iter() if visible(n) and n.attrib.get("package") == package]
+    return (sum("edittext" in n.attrib.get("class", "").lower()
+                and n.attrib.get("resource-id", "").endswith(":id/et_phone") for n in nodes) == 1
+            and any(n.attrib.get("resource-id", "").endswith(":id/tv_title")
+                    and norm(n.attrib.get("text")) == "enter your phone number" for n in nodes)
+            and any(n.attrib.get("resource-id", "").endswith(":id/tv_next")
+                    and norm(n.attrib.get("text")) == "next" for n in nodes))
+
+def known_phone_placeholder(root, node, package):
+    current = norm(node.attrib.get("text", ""))
+    if not current or (not re.search(r"\d", current) and any(h in current for h in PHONE_HINTS)):
+        return True
+    # Accessibility reports the example-number hint as text on this empty field.
+    samples = {"2015550123", "13123456789"}
+    return (legacy_overseas_phone_form(root, package)
+            and re.sub(r"\D", "", current) in samples
+            and not any(visible(n) and n.attrib.get("package") == package
+                        and n.attrib.get("resource-id", "").endswith(":id/iv_clear")
+                        for n in root.iter()))
+
 def report_template():
     keys = ("launched", "privacy_accepted", "phone_login_opened", "country_confirmed", "phone_entered", "terms_checked", "get_code_clicked")
     return {"steps": {k: False for k in keys}, "result_category": "unsupported_ui", "matched_prompt_keywords": [], "otp_input_visible": False, "timeout": False}
@@ -144,10 +166,15 @@ def run(args):
     if not ok:
         report["timeout"], report["result_category"] = timed, "timeout" if timed else "device_unavailable"
         return report
-    ok, _, timed = adb.run("shell", "am", "start", "-n", args.package + "/" + ACTIVITY, timeout=25)
-    if not ok:
-        report["timeout"], report["result_category"] = timed, "timeout" if timed else "unsupported_ui"
-        return report
+    existing, timed = adb.ui()
+    has_phone_form = (existing is not None and package_visible(existing, args.package)
+                      and len(fields(existing, PHONE_HINTS, package=args.package)) == 1)
+    report["used_existing_phone_form"] = has_phone_form
+    if not has_phone_form:
+        ok, _, timed = adb.run("shell", "am", "start", "-n", args.package + "/" + ACTIVITY, timeout=25)
+        if not ok:
+            report["timeout"], report["result_category"] = timed, "timeout" if timed else "unsupported_ui"
+            return report
     report["steps"]["launched"] = True
     login_tapped = country_opened = country_selected = phone_typed = terms_tapped = sms_clicked = False
     phone_field_id = phone_field_bounds = ""
@@ -214,8 +241,9 @@ def run(args):
         report["steps"]["country_confirmed"] = True
         if not phone_typed:
             node = phone_fields[0]
-            current = norm(node.attrib.get("text", ""))
-            if current and (re.search(r"\d", current) or not any(h in current for h in PHONE_HINTS)): break
+            if not known_phone_placeholder(root, node, args.package):
+                report["result_category"] = "phone_field_not_empty"
+                break
             target = clickable(root, node, args.package)
             if target is None or not adb.tap(target.attrib.get("bounds")): break
             phone_field_id = node.attrib.get("resource-id", "").strip()
@@ -225,14 +253,20 @@ def run(args):
                 report["timeout"], report["result_category"] = timed, "timeout" if timed else "unsupported_ui"; break
             phone_typed = True; report["steps"]["phone_entered"] = True; time.sleep(1); continue
         boxes = terms_boxes(root, args.package)
-        if len(boxes) != 1: break
-        box = boxes[0]
-        if box.attrib.get("checked") != "true":
-            if terms_tapped: break
-            target = clickable(root, box, args.package)
-            if target is None or not adb.tap(target.attrib.get("bounds")): break
-            terms_tapped = True; time.sleep(1); continue
-        report["steps"]["terms_checked"] = True
+        if not boxes and legacy_overseas_phone_form(root, args.package):
+            report["terms_mode"] = "no_checkbox_in_overseas_phone_form"
+        elif len(boxes) == 1:
+            box = boxes[0]
+            if box.attrib.get("checked") != "true":
+                if terms_tapped: break
+                target = clickable(root, box, args.package)
+                if target is None or not adb.tap(target.attrib.get("bounds")): break
+                terms_tapped = True; time.sleep(1); continue
+            report["steps"]["terms_checked"] = True
+            report["terms_mode"] = "checkbox_checked"
+        else:
+            report["result_category"] = "terms_control_unresolved"
+            break
         clicked, label, count = action(adb, root, GET_CODE, preferred=True, package=args.package)
         if clicked:
             sms_clicked, sms_deadline = True, time.monotonic() + 20
