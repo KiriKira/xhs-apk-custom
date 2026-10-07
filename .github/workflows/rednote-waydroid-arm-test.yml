@@ -388,6 +388,12 @@ jobs:
           test "$android_api" -ge 33
           adb -s "$test_serial" shell service check package
           adb -s "$test_serial" shell service check activity
+          # Prepare the fresh test desktop before opening any app/account flow.
+          adb -s "$test_serial" shell settings put system screen_off_timeout 1800000
+          adb -s "$test_serial" shell input keyevent KEYCODE_WAKEUP
+          adb -s "$test_serial" shell wm dismiss-keyguard
+          adb -s "$test_serial" shell input keyevent KEYCODE_HOME
+          adb -s "$test_serial" shell cmd statusbar collapse
 
       - name: Install the selected original or rebuilt APK
         shell: bash
