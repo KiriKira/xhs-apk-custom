@@ -1,0 +1,139 @@
+name: REDnote KVM compatibility test
+
+on:
+  push:
+    branches: ["codex/rednote-kvm-test"]
+    paths:
+      - ".github/workflows/rednote-kvm-test.yml"
+      - "build_rednote.py"
+      - "tools/rednote_emulator_smoke.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rednote-kvm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    # Standard public-repository runner; no larger runner, cache or artifact storage.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Require KVM and install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          ls -l /dev/kvm
+          df -h .
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "emulator" "platform-tools" "build-tools;35.0.0" \
+            "platforms;android-35" "system-images;android-35;google_apis;x86_64"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+
+      - name: Fetch and verify the exact REDnote input and APKEditor
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rednote-input/original bins output_apks
+          curl --fail --location --retry 2 \
+            'https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21' \
+            --output rednote-input/rednote.xapk
+          echo 'bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0  rednote-input/rednote.xapk' | sha256sum --check
+          curl --fail --location --retry 2 \
+            'https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar' \
+            --output bins/apkeditor.jar
+          echo 'a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67  bins/apkeditor.jar' | sha256sum --check
+          python3 - <<'PY'
+          import pathlib, zipfile
+          target = pathlib.Path('rednote-input/original')
+          with zipfile.ZipFile('rednote-input/rednote.xapk') as archive:
+              apks = [entry for entry in archive.infolist() if entry.filename.lower().endswith('.apk')]
+              if len(apks) != 3:
+                  raise SystemExit('Unexpected APK split set')
+              for entry in apks:
+                  name = pathlib.PurePosixPath(entry.filename).name
+                  (target / name).write_bytes(archive.read(entry))
+          PY
+
+      - name: Build renamed control and layout variant
+        shell: bash
+        env:
+          KEYSTORE_PASSWORD: "123456789" # Existing public repository test key.
+          KEY_PASSWORD: "123456789"
+        run: |
+          set -euo pipefail
+          python3 build_rednote.py \
+            --input rednote-input/rednote.xapk \
+            --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0 \
+            --source 'https://apkpure.net/rednote-app/com.xingin.xhs/download' \
+            --output output_apks/rednote-control.apk
+          python3 build_rednote.py \
+            --input rednote-input/rednote.xapk \
+            --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0 \
+            --source 'https://apkpure.net/rednote-app/com.xingin.xhs/download' \
+            --fold-layout --output output_apks/rednote-fold.apk
+
+      - name: Start Android 15 with hardware acceleration
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'no\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            --force --name rednote-ci --package 'system-images;android-35;google_apis;x86_64' \
+            --device pixel_6
+          cat "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/source.properties"
+          nohup emulator -avd rednote-ci -accel on -cores 2 -memory 2048 \
+            -gpu swiftshader -no-window -no-audio -no-boot-anim -no-snapshot \
+            -port 5554 > emulator-boot.log 2>&1 &
+          echo "$!" > emulator.pid
+          timeout 180 adb -s emulator-5554 wait-for-device
+          for attempt in $(seq 1 60); do
+            ready="$(timeout 10 adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r' || true)"
+            if [ "$ready" = 1 ]; then
+              adb -s emulator-5554 shell service check package
+              adb -s emulator-5554 shell service check activity
+              exit 0
+            fi
+            sleep 5
+          done
+          tail -n 80 emulator-boot.log
+          exit 1
+
+      - name: Install and launch three variants without account information
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/rednote_emulator_smoke.py \
+            --serial emulator-5554 --original-dir rednote-input/original \
+            --control-apk output_apks/rednote-control.apk \
+            --fold-apk output_apks/rednote-fold.apk --report-dir rednote-report
+
+      - name: Print bounded test evidence
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, pathlib
+          report = pathlib.Path('rednote-report')
+          for path in sorted(report.rglob('*')):
+              if not path.is_file() or path.stat().st_size > 500_000:
+                  continue
+              if path.suffix in ('.json', '.xml', '.png'):
+                  print('REDNOTE_EVIDENCE_BEGIN ' + path.as_posix())
+                  print(base64.b64encode(path.read_bytes()).decode('ascii'))
+                  print('REDNOTE_EVIDENCE_END')
+          PY
+          if [ -f emulator.pid ]; then kill "$(cat emulator.pid)" || true; fi
