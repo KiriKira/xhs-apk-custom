@@ -1,0 +1,199 @@
+name: REDnote GSM2SIP Android VM reference preview
+
+on:
+  push:
+    branches: ["codex/rednote-kvm-test"]
+    paths:
+      - ".github/workflows/rednote-gsm2sip-reference.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rednote-gsm2sip-reference-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reference-preview:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Enable KVM and install Android SDK 35 tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libpulse0
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "emulator" "platform-tools" "build-tools;35.0.0" "platforms;android-35"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+
+      - name: Download and verify the original split APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rednote-input/original runtime-control
+          curl --fail --location --retry 2 --connect-timeout 20 --max-time 240 --speed-time 30 --speed-limit 1024 \
+            'https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21' \
+            --output rednote-input/rednote.xapk
+          echo 'bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0  rednote-input/rednote.xapk' | sha256sum --check
+          python3 - <<'PYCODE'
+          import pathlib
+          import zipfile
+
+          target = pathlib.Path("rednote-input/original")
+          with zipfile.ZipFile("rednote-input/rednote.xapk") as archive:
+              apks = [entry for entry in archive.infolist() if entry.filename.lower().endswith(".apk")]
+              if len(apks) != 3:
+                  raise SystemExit("Unexpected APK split count")
+              for entry in apks:
+                  name = pathlib.PurePosixPath(entry.filename).name
+                  (target / name).write_bytes(archive.read(entry))
+          PYCODE
+          split_count=0
+          for apk in rednote-input/original/*.apk; do
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+            split_count=$((split_count + 1))
+          done
+          test "$split_count" -eq 3
+          printf 'verified_original_splits=%s\n' "$split_count"
+
+      - name: Prepare the account-free emulator session script
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/rednote-reference-session.sh" <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          adb -s emulator-5554 install-multiple -r rednote-input/original/*.apk
+          python3 tools/rednote_login_preview.py \
+            --serial emulator-5554 --package com.xingin.xhs \
+            --output "$RUNNER_TEMP/rednote-reference-preview.json"
+          python3 - <<'PYCODE'
+          import json
+          import os
+          import pathlib
+          import subprocess
+
+          def adb_prop(name):
+              try:
+                  result = subprocess.run(
+                      ["adb", "-s", "emulator-5554", "shell", "getprop", name],
+                      check=True, capture_output=True, text=True, timeout=10,
+                  )
+                  return result.stdout.strip() or "unavailable"
+              except Exception:
+                  return "unavailable"
+
+          emulator_path = pathlib.Path(os.environ["ANDROID_HOME"]) / "emulator" / "emulator"
+          try:
+              version_output = subprocess.run(
+                  [str(emulator_path), "-version"],
+                  check=True, capture_output=True, text=True, timeout=10,
+              ).stdout.splitlines()
+              emulator_version = version_output[0].strip() if version_output else "unavailable"
+          except Exception:
+              emulator_version = "unavailable"
+
+          preview_path = pathlib.Path(os.environ["RUNNER_TEMP"], "rednote-reference-preview.json")
+          preview = json.loads(preview_path.read_text(encoding="utf-8"))
+          if preview.get("phone_input_performed") is not False or preview.get("sms_requested") is not False:
+              raise SystemExit("Refusing to publish a preview that entered phone data or requested SMS")
+          preview["environment"] = {
+              "android_release": adb_prop("ro.build.version.release"),
+              "android_api_level": adb_prop("ro.build.version.sdk"),
+              "abi_list": adb_prop("ro.product.cpu.abilist"),
+              "native_bridge": adb_prop("ro.dalvik.vm.native.bridge"),
+              "emulator_version": emulator_version,
+              "system_image": "api-35-google_apis-x86_64",
+              "profile": "7.6in Foldable",
+              "cores": 2,
+              "ram": "2048M",
+              "source_xapk_sha256": "bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0",
+              "verified_split_count": 3,
+          }
+          published_path = pathlib.Path("runtime-control", f"rednote-{os.environ['GITHUB_RUN_ID']}-reference.preview.json")
+          published_path.parent.mkdir(parents=True, exist_ok=True)
+          published_path.write_text(json.dumps(preview, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+          print(json.dumps({
+              "preview_file": published_path.as_posix(),
+              "result_category": preview.get("result_category"),
+              "phone_input_performed": preview.get("phone_input_performed"),
+              "sms_requested": preview.get("sms_requested"),
+              "environment": preview["environment"],
+          }, ensure_ascii=False))
+          PYCODE
+          BASH
+          chmod 700 "$RUNNER_TEMP/rednote-reference-session.sh"
+
+      - name: Install original REDnote and capture the account-free preview
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: 7.6in Foldable
+          cores: 2
+          ram-size: 2048M
+          emulator-boot-timeout: 360
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: bash "$RUNNER_TEMP/rednote-reference-session.sh"
+
+      - name: Publish the safe preview JSON to the run branch
+        if: always()
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          preview="runtime-control/rednote-${GITHUB_RUN_ID}-reference.preview.json"
+          if [ ! -f "$preview" ]; then
+            printf 'safe_preview_publish=skipped reason=preview-not-produced\n'
+            exit 0
+          fi
+          python3 - <<'PYCODE'
+          import base64
+          import json
+          import os
+          import pathlib
+          import sys
+
+          sys.path.insert(0, "tools")
+          from rednote_private_input import api
+
+          run_id = os.environ["GITHUB_RUN_ID"]
+          relative_path = f"runtime-control/rednote-{run_id}-reference.preview.json"
+          preview_path = pathlib.Path(relative_path)
+          preview = json.loads(preview_path.read_text(encoding="utf-8"))
+          if preview.get("phone_input_performed") is not False or preview.get("sms_requested") is not False:
+              raise SystemExit("Refusing to publish a preview that entered phone data or requested SMS")
+          body = {
+              "message": f"Publish account-free REDnote preview for run {run_id}",
+              "branch": os.environ["GITHUB_REF_NAME"],
+              "content": base64.b64encode(preview_path.read_bytes()).decode("ascii"),
+          }
+          existing = api("GET", relative_path)
+          if existing is not None:
+              body["sha"] = existing["sha"]
+          api("PUT", relative_path, body)
+          print(json.dumps({"safe_preview_publish": "success", "path": relative_path}, ensure_ascii=False))
+          PYCODE
