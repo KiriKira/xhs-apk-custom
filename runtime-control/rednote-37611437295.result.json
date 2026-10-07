@@ -1,0 +1,1 @@
+{"steps": {"launched": true, "privacy_accepted": false, "phone_login_opened": false, "country_confirmed": false, "phone_entered": false, "terms_checked": false, "get_code_clicked": false}, "result_category": "timeout", "matched_prompt_keywords": [], "otp_input_visible": false, "timeout": true, "stage": "phone_finished", "test_variant": "original"}
