@@ -150,24 +150,62 @@ def extract_crash_summary(logcat: str, package: str) -> dict[str, Any]:
     events: list[dict[str, Any]] = []
     for index, line in enumerate(lines):
         if "FATAL EXCEPTION" in line:
-            block = lines[index:index + 24]
+            block_end = min(len(lines), index + 100)
+            for cursor in range(index + 1, block_end):
+                if "FATAL EXCEPTION" in lines[cursor]:
+                    block_end = cursor
+                    break
+            block = lines[index:block_end]
             process_line = next((item for item in block if f"Process: {package}," in item), None)
             if process_line:
-                throwable = None
-                frames: list[str] = []
+                exception_chain: list[str] = []
+                resource_ids: list[str] = []
+                app_frames: list[str] = []
+                sdk_frames: list[str] = []
+                framework_frames: list[str] = []
+                class_re = re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+)")
+                resource_re = re.compile(r"#0x[0-9a-fA-F]{1,8}(?:/[A-Za-z][A-Za-z0-9_.$/-]*)?")
+                framework_prefixes = (
+                    "android.", "com.android.", "dalvik.", "java.", "javax.",
+                    "libcore.", "org.apache.harmony.", "sun.",
+                )
                 for item in block:
                     clean = item.split(": ", 1)[-1].strip()
-                    if throwable is None and re.match(r"(?:Caused by: )?[A-Za-z_$][\w.$]*(?:Exception|Error)(?::|$)", clean):
-                        throwable = clean.split(":", 1)[0]
+                    is_cause = clean.startswith("Caused by:")
+                    exception_text = clean.removeprefix("Caused by:").strip() if is_cause else clean
+                    exception_match = class_re.match(exception_text)
+                    if exception_match:
+                        exception_class = exception_match.group(1)
+                        if is_cause or exception_class.endswith(("Exception", "Error", "Throwable")):
+                            exception_chain.append(exception_class)
+                            for resource_id in resource_re.findall(exception_text):
+                                if resource_id not in resource_ids:
+                                    resource_ids.append(resource_id)
                     match = FRAME_RE.search(item)
-                    if match and len(frames) < 5:
-                        frames.append(f"{match.group(1)}.{match.group(2)}({match.group(3)})")
-                events.append({
+                    if match:
+                        class_name, method_name, source = match.groups()
+                        frame = f"{class_name}.{method_name}({source})"
+                        if class_name.startswith(("com.xingin.", "com.kirikira.")):
+                            target = app_frames
+                        elif class_name.startswith(framework_prefixes):
+                            target = framework_frames
+                        else:
+                            target = sdk_frames
+                        if frame not in target:
+                            target.append(frame)
+                prioritized_frames = (app_frames[-8:] + sdk_frames[-8:])[:8]
+                if len(prioritized_frames) < 8:
+                    prioritized_frames.extend(framework_frames[-(8 - len(prioritized_frames)):])
+                event: dict[str, Any] = {
                     "type": "java_fatal_exception",
                     "thread": redact(line.split("FATAL EXCEPTION", 1)[-1].strip(" :")),
-                    "throwable": throwable,
-                    "stack_frames": frames,
-                })
+                    "throwable": exception_chain[0] if exception_chain else None,
+                    "exception_chain": exception_chain,
+                    "stack_frames": prioritized_frames,
+                }
+                if resource_ids:
+                    event["resource_ids"] = resource_ids
+                events.append(event)
         if "Fatal signal" in line and any(package in item for item in lines[index:index + 12]):
             events.append({"type": "native_fatal_signal", "summary": redact(line.rsplit(":", 1)[-1].strip())})
         died = PACKAGE_DIED_RE.search(line)
