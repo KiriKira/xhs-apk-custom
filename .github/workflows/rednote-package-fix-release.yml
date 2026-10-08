@@ -1,0 +1,192 @@
+name: REDnote package fix pre-release
+
+on:
+  push:
+    branches:
+      - codex/rednote-package-fix
+    paths:
+      - .github/workflows/rednote-package-fix-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/codex/rednote-package-fix'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Java 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install Android SDK build tools and platform 35
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          sdkmanager="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager"
+          "$sdkmanager" 'build-tools;35.0.0' 'platforms;android-35'
+
+          build_tools="$sdk_root/build-tools/35.0.0"
+          platform_jar="$sdk_root/platforms/android-35/android.jar"
+          for tool in aapt2 zipalign apksigner d8; do
+            test -x "$build_tools/$tool"
+          done
+          test -f "$platform_jar"
+          {
+            echo "ANDROID_HOME=$sdk_root"
+            echo "ANDROID_SDK_ROOT=$sdk_root"
+            echo "ANDROID_JAR=$platform_jar"
+            echo "AAPT2=$build_tools/aapt2"
+            echo "ZIPALIGN=$build_tools/zipalign"
+            echo "APKSIGNER=$build_tools/apksigner"
+            echo "D8=$build_tools/d8"
+          } >> "$GITHUB_ENV"
+          echo "$build_tools" >> "$GITHUB_PATH"
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Download and verify baseline APK and APKEditor
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p input bins output_apks
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 240 \
+            'https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-1/rednote-fold-custom.apk' \
+            --output input/baseline.apk
+          echo '776a835279b476bd0314dc77488fc43f03244869f2fed48aa8ee0e4d9e930773  input/baseline.apk' | sha256sum --check
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 180 \
+            'https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar' \
+            --output bins/apkeditor.jar
+          echo 'a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67  bins/apkeditor.jar' | sha256sum --check
+
+      - name: Build package-fix candidate from the pinned baseline
+        shell: bash
+        env:
+          KEYSTORE_PASSWORD: '123456789'
+          KEY_PASSWORD: '123456789'
+        run: |
+          set -euo pipefail
+          python3 tools/build_rednote_package_fix.py \
+            --input input/baseline.apk \
+            --output output_apks/rednote-fold-custom.apk \
+            --report output_apks/rednote-fold-build-report.json
+
+      - name: Verify APK metadata, signer, alignment, report, and checksums
+        shell: bash
+        env:
+          EXPECTED_PACKAGE: com.kirikira.rednote.fold
+          EXPECTED_SIGNER_SHA256: 637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4
+        run: |
+          set -euo pipefail
+          apk='output_apks/rednote-fold-custom.apk'
+          report='output_apks/rednote-fold-build-report.json'
+          test -s "$apk"
+          test -s "$report"
+
+          baseline_badging="$(aapt2 dump badging input/baseline.apk)"
+          grep -F "package: name='$EXPECTED_PACKAGE' versionCode='9481803' versionName='9.48.1'" <<< "$baseline_badging"
+          output_badging="$(aapt2 dump badging "$apk")"
+          grep -F "package: name='$EXPECTED_PACKAGE' versionCode='9481803' versionName='9.48.1'" <<< "$output_badging"
+
+          signer_report="$(apksigner verify --verbose --print-certs "$apk")"
+          printf '%s\n' "$signer_report" | tee "$RUNNER_TEMP/package-fix-apksigner.txt"
+          grep -F "Signer #1 certificate SHA-256 digest: $EXPECTED_SIGNER_SHA256" "$RUNNER_TEMP/package-fix-apksigner.txt"
+          zipalign -c -P 16 -v 4 "$apk"
+          python3 -m json.tool "$report" >/dev/null
+
+          (
+            cd output_apks
+            sha256sum rednote-fold-custom.apk rednote-fold-build-report.json > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Prepare pre-release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cp output_apks/rednote-fold-custom.apk \
+            output_apks/rednote-fold-build-report.json \
+            output_apks/SHA256SUMS release-assets/
+
+      - name: Upload package-fix pre-release assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: rednote-package-fix-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/codex/rednote-package-fix'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download package-fix assets
+        uses: actions/download-artifact@v6
+        with:
+          name: rednote-package-fix-release-assets
+          path: release-assets
+
+      - name: Create a non-latest pre-release without replacing an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='rednote-v9.48.1-3'
+          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release $tag already exists; refusing to replace it." >&2
+            exit 1
+          fi
+          test -s release-assets/rednote-fold-custom.apk
+          test -s release-assets/rednote-fold-build-report.json
+          test -s release-assets/SHA256SUMS
+          (
+            cd release-assets
+            sha256sum --check SHA256SUMS
+          )
+
+          cat > release-notes.md <<'NOTES'
+          Pre-release package-fix candidate based on `rednote-v9.48.1-1`, without the feed-ad patch.
+
+          The package resource table uses the clone package name `com.kirikira.rednote.fold`. The original main-process label remains `com.xingin.xhs`, and the original `ddc.a` main-process check is restored.
+
+          This build is for real-device startup testing. Runtime cold start has not yet completed, so this pre-release does not claim a successful cold start or an empirically tested rollback.
+
+          Keep the installed package in place while testing. The package name, Android `versionCode` 9481803, `versionName` 9.48.1, and signer are unchanged from `rednote-v9.48.1-1`; installing that baseline APK over this candidate can roll back in place while retaining app data. That overlay has not been tested in this workflow.
+
+          APK signer SHA-256: `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4`.
+          NOTES
+
+          gh release create "$tag" \
+            release-assets/rednote-fold-custom.apk \
+            release-assets/rednote-fold-build-report.json \
+            release-assets/SHA256SUMS \
+            --repo "$GH_REPO" \
+            --title "$tag" \
+            --notes-file release-notes.md \
+            --prerelease \
+            --latest=false \
+            --target "$GITHUB_SHA"
