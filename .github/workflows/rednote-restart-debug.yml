@@ -392,8 +392,13 @@ jobs:
               'otp_entered': bool(source.get('otp_entered')),
               'verify_clicked': bool(source.get('verify_clicked')),
               'me_opened': bool(source.get('me_opened')),
+              'me_tab_tapped': bool(source.get('me_tab_tapped')),
               'logged_in': logged_in,
               'timeout': bool(source.get('timeout')),
+              'known_screen_markers': source.get('known_screen_markers', {}),
+              'activity_class': source.get('activity_class'),
+              'app_pids': source.get('app_pids', []),
+              'crash_events': source.get('crash_events', []),
           }
           pathlib.Path('otp-result.json').write_text(json.dumps(report, separators=(',', ':')) + '\n')
           with open(os.environ['GITHUB_ENV'], 'a') as env:
@@ -494,7 +499,8 @@ jobs:
               source = json.loads(otp_path.read_text())
               otp = {key: source[key] for key in (
                   'stage', 'result_category', 'otp_page_confirmed', 'otp_input_visible',
-                  'otp_field_tapped', 'otp_entered', 'verify_clicked', 'me_opened', 'logged_in', 'timeout') if key in source}
+                  'otp_field_tapped', 'otp_entered', 'verify_clicked', 'me_opened', 'me_tab_tapped', 'logged_in', 'timeout',
+                  'known_screen_markers', 'activity_class', 'app_pids', 'crash_events') if key in source}
               publish(f'runtime-control/rednote-{rid}.otp-result.json', otp, 'Finalize sanitized REDnote OTP result')
           elif os.environ.get('NEED_OTP') == 'true':
               publish(f'runtime-control/rednote-{rid}.otp-result.json', {

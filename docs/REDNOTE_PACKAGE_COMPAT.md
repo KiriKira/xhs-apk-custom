@@ -34,8 +34,10 @@ YouTube 的 GmsCore 专用逻辑不能直接移植到 REDnote。可借鉴的是�
 已读取发布 APK 的 `classes17.dex`，确认 `ddc.a.invoke()` 使用新包名，
 `XhsApplication.isMainProcess()` 仍比较旧包名 `com.xingin.xhs`。
 后者的结果写入全局主进程标记 `psb.f.j`。
-源码中另有 `wcc.i.o()`、`wcc.i.f()`、`wcc.p.e()`、`wcc.q0.i()` 等旧包名判断，
-涉及账户和启动任务、Provider proxy、native 库路径初始化。
+源码中另有 `wcc.i.o()`、`wcc.i.f()`、`wcc.p.e()`、`wcc.q0.i()` 等旧包名判断。
+继续扫描还发现 `CommonApplication`、`LonglinkApplication`、`OtherApplication`
+创建流程中的相同进程比较；当前至少 16 个方法需要逐一分类，不能只修第一处后
+认为已经覆盖。它们涉及账户和启动任务、Provider proxy、native 库路径初始化。
 
 这是已确认的内部不一致；卡片崩溃的具体原因仍需登录后的崩溃栈来确定。
 此次测试保持上一版 APK 不变，不把未验证的启动补丁加入发布包。
@@ -50,3 +52,8 @@ YouTube 的 GmsCore 专用逻辑不能直接移植到 REDnote。可借鉴的是�
 原字符串，但必须同时恢复 `ddc` 中的旧进程名比较。该办法只保留进程名，
 不会恢复原包的 UID、数据目录、权限、Provider 或 PackageManager 身份。
 参考 [Android process 属性](https://developer.android.com/guide/topics/manifest/application-element#proc)。
+
+长期维护可沿用 Morphe 的实际改包方式：保留新包名的默认进程，按源码语义修正
+本地进程比较，并对版本、方法和比较形状进行校验。业务协议常量不能混入这一类。
+保留原主进程标签可用于受控对照，但私有组件 `android:process=":name"` 仍根据
+Manifest 新包名展开，不能当成恢复完整原包身份的方案。

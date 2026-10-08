@@ -4,21 +4,42 @@
 import argparse, json, os, re, stat, time
 from pathlib import Path
 import rednote_phone_test as ui
+import rednote_restart_debug as restart_debug
 
 OTP_RE = re.compile(r"[0-9]{4,8}\Z")
 OTP_PAGE = ("验证码", "短信验证码", "输入验证码", "verification code", "enter code", "one-time code")
 GLOBAL_OTP_FIELD_ID = ":id/editCode"
 GLOBAL_OTP_SLOT_IDS = tuple(f":id/txtCode{i}" for i in range(1, 7))
 OTP_FAILURE = ("验证码错误", "验证码无效", "验证码不正确", "验证码有误", "验证码已过期", "验证码已失效",
-               "验证失败", "invalid code", "incorrect code", "code expired", "login failed", "登录失败")
+               "无效验证码", "验证码失效", "验证失败", "invalid code", "incorrect code", "code expired",
+               "invalid verification code", "incorrect verification code", "verification code error",
+               "sms verification code error", "verification code expired", "verification code has expired",
+               "login failed", "登录失败")
 VERIFY = ("验证", "确认", "下一步", "登录", "登录/注册", "verify", "continue", "next", "submit", "log in", "login")
 ME = ("我", "我的", "me", "my profile")
 PROFILE_MARKERS = ("编辑资料", "编辑个人资料", "edit profile", "edit profile info")
+LOGIN_MARKERS = ("登录/注册", "手机号登录", "手机号码登录", "log in", "login", "sign in")
+ME_TAB_ID = ":id/index_me"
+PROFILE_CONTAINER_ID = ":id/matrix_profile_new_page_container_layout"
+PROFILE_TOOLBAR_IDS = (":id/editUserInfoStatusBar", ":id/profile_new_page_toolbar_btn_ll")
+HOME_FEED_ID = ":id/mLoadMoreRecycleView"
+OTP_ERROR_LOG_MARKERS = (
+    "sms verification code error", "invalid verification code", "incorrect verification code",
+    "verification code error", "verification code expired", "verification code has expired",
+    "验证码错误", "验证码不正确", "无效验证码", "验证码已失效", "验证码已过期",
+)
+
+def empty_screen_markers():
+    return {"phone_form_visible": False, "otp_form_visible": False, "home_feed_visible": False,
+            "login_marker_visible": False, "me_tab_visible": False, "profile_container_visible": False,
+            "profile_edit_marker_visible": False, "otp_error_marker_visible": False}
 
 def report_template():
     return {"result_category": "unsupported_ui", "otp_page_confirmed": False, "otp_input_visible": False,
             "otp_field_tapped": False, "otp_entered": False, "verify_clicked": False, "me_opened": False, "logged_in": False,
-            "matched_prompt_keywords": [], "timeout": False}
+            "me_tab_tapped": False, "matched_prompt_keywords": [], "timeout": False,
+            "known_screen_markers": empty_screen_markers(), "activity_class": None, "app_pids": [],
+            "crash_events": []}
 
 def load_otp(path):
     if path.is_symlink() or not path.is_file(): raise ValueError
@@ -42,6 +63,71 @@ def unique_marker(root, labels, package):
             for label in labels:
                 if value == ui.norm(label): found[id(node)] = label
     return (next(iter(found.values())) if len(found) == 1 else None), len(found)
+
+def resource_nodes(root, package, suffix):
+    return [n for n in root.iter() if ui.visible(n) and n.attrib.get("package") == package
+            and n.attrib.get("resource-id", "").endswith(suffix)]
+
+def profile_edit_marker_visible(root, package, profile_nodes):
+    if len(profile_nodes) != 1: return False
+    parents = {child: parent for parent in root.iter() for child in parent}
+    toolbar_nodes = [n for n in root.iter() if ui.visible(n) and n.attrib.get("package") == package
+                     and any(n.attrib.get("resource-id", "").endswith(suffix) for suffix in PROFILE_TOOLBAR_IDS)]
+    matches = []
+    for node in root.iter():
+        if not ui.visible(node) or node.attrib.get("package") != package: continue
+        if not any(ui.norm(node.attrib.get(key, "")) == ui.norm(label)
+                   for key in ("text", "content-desc") for label in PROFILE_MARKERS):
+            continue
+        current = node
+        while current is not None:
+            if current in toolbar_nodes:
+                matches.append(node)
+                break
+            current = parents.get(current)
+    return len({id(n) for n in matches}) == 1
+
+def known_screen_markers(root, package):
+    texts = ui.ui_text(root, package)
+    phone_fields = ui.fields(root, ui.PHONE_HINTS, package=package)
+    profile_nodes = resource_nodes(root, package, PROFILE_CONTAINER_ID)
+    return {
+        "phone_form_visible": len(phone_fields) == 1,
+        "otp_form_visible": otp_form_active(root, package),
+        "home_feed_visible": len(resource_nodes(root, package, HOME_FEED_ID)) == 1,
+        "login_marker_visible": bool(ui.matches(texts, LOGIN_MARKERS)),
+        "me_tab_visible": len(resource_nodes(root, package, ME_TAB_ID)) == 1,
+        "profile_container_visible": len(profile_nodes) == 1,
+        "profile_edit_marker_visible": profile_edit_marker_visible(root, package, profile_nodes),
+        "otp_error_marker_visible": bool(ui.matches(texts, OTP_FAILURE)),
+    }
+
+def tap_me_tab(adb, root, package):
+    nodes = resource_nodes(root, package, ME_TAB_ID)
+    if len(nodes) != 1: return False, len(nodes)
+    node = nodes[0]
+    if not node.attrib.get("class", "").endswith("TabView"): return False, 1
+    bounds = ui.BOUNDS.fullmatch(node.attrib.get("bounds", ""))
+    if not bounds: return False, 1
+    x1, y1, x2, y2 = map(int, bounds.groups())
+    if x2 <= x1 or y2 <= y1: return False, 1
+    return adb.tap(node.attrib["bounds"]), 1
+
+def logcat_has_known_otp_error(adb, since_epoch):
+    ok, raw, _ = adb.run("logcat", "-d", "-v", "epoch", "-t", "1000", timeout=10)
+    if not ok: return False
+    for line in raw.decode("utf-8", errors="ignore").splitlines():
+        try: timestamp = float(line.split(" ", 1)[0])
+        except (ValueError, IndexError): continue
+        if timestamp >= since_epoch and any(marker in line.lower() for marker in OTP_ERROR_LOG_MARKERS):
+            return True
+    return False
+
+def otp_form_active(root, package):
+    global_state, _ = global_otp_form(root, package)
+    if global_state == "confirmed": return True
+    has_otp_title = bool(ui.matches(ui.ui_text(root, package), OTP_PAGE))
+    return has_otp_title and len(ui.fields(root, ui.OTP_HINTS, package=package)) == 1
 
 def otp_field(root, package):
     semantic = ui.fields(root, ui.OTP_HINTS, package=package)
@@ -72,14 +158,14 @@ def global_otp_form(root, package):
     return "confirmed", field_nodes[0]
 
 def result_after_login(root, report, package):
-    if (ui.fields(root, ui.PHONE_HINTS, package=package)
-            or otp_field(root, package) is not None
-            or ui.matches(ui.ui_text(root, package), OTP_PAGE)):
+    markers = known_screen_markers(root, package)
+    report["known_screen_markers"] = markers
+    if markers["phone_form_visible"] or markers["otp_form_visible"]:
         return False
-    marker, count = unique_marker(root, PROFILE_MARKERS, package)
-    if count == 1:
+    if (markers["profile_container_visible"] and markers["profile_edit_marker_visible"]
+            and markers["me_tab_visible"]):
         report["logged_in"] = True
-        report["matched_prompt_keywords"] = [marker]
+        report["matched_prompt_keywords"] = ["Edit profile"]
         report["result_category"] = "logged_in"
         return True
     return False
@@ -95,6 +181,7 @@ def run(args):
     if not ok:
         report["timeout"], report["result_category"] = timed, "timeout" if timed else "device_unavailable"
         return report
+    start_epoch = time.time()
     deadline, submitted_deadline = time.monotonic() + 75, 0
     me_tapped = False
     otp_field_id = otp_field_bounds = ""
@@ -106,6 +193,10 @@ def run(args):
         if not ui.package_visible(root, args.package):
             report["result_category"] = "foreign_ui"
             break
+        markers = known_screen_markers(root, args.package)
+        report["known_screen_markers"] = markers
+        if markers["profile_container_visible"]:
+            report["me_opened"] = True
         texts = ui.ui_text(root, args.package)
         unsafe, captcha, challenge = ui.matches(texts, ui.UNSAFE), ui.matches(texts, ui.CAPTCHA), ui.matches(texts, ui.CHALLENGE)
         if unsafe or captcha or challenge:
@@ -117,6 +208,7 @@ def run(args):
             report["matched_prompt_keywords"], report["result_category"] = failure, "otp_rejected"
             break
         otp_text = ui.matches(texts, OTP_PAGE)
+        otp_form = otp_form_active(root, args.package)
         global_state, global_field = global_otp_form(root, args.package)
         if global_state == "invalid":
             report["result_category"] = "unsupported_ui"
@@ -134,10 +226,10 @@ def run(args):
                 field = None
         report["otp_input_visible"] = field is not None
         if not report["otp_entered"]:
-            if (otp_text or global_state == "confirmed") and field is None:
+            if otp_form and field is None:
                 report["matched_prompt_keywords"] = otp_text[:3]
                 break
-            if not otp_text and global_state != "confirmed":
+            if not otp_form:
                 time.sleep(1); continue
             current = ui.norm(field.attrib.get("text", ""))
             if current and (re.search(r"\d", current) or not any(h in current for h in ui.OTP_HINTS)):
@@ -158,7 +250,7 @@ def run(args):
             deadline = max(deadline, submitted_deadline)
             continue
         if result_after_login(root, report, args.package): break
-        if (field is not None or otp_text) and not report["verify_clicked"]:
+        if otp_form and not report["verify_clicked"]:
             clicked, label, count = ui.action(adb, root, VERIFY, package=args.package)
             if count > 1: break
             if clicked:
@@ -166,12 +258,16 @@ def run(args):
                 report["matched_prompt_keywords"] = [label]
                 continue
         # A disappearing OTP field indicates an automatic submit; only then visit Me.
-        if field is None and not otp_text and not me_tapped:
-            clicked, label, count = ui.action(adb, root, ME, package=args.package)
-            if count > 1: break
+        if (field is None and not otp_form and markers["home_feed_visible"]
+                and markers["me_tab_visible"] and not me_tapped):
+            clicked, count = tap_me_tab(adb, root, args.package)
+            label = "Me"
+            if count == 0:
+                clicked, label, count = ui.action(adb, root, ME, package=args.package)
+            if count > 1 or (count == 1 and not clicked): break
             if clicked:
                 me_tapped = True
-                report["me_opened"] = True
+                report["me_tab_tapped"] = True
                 report["matched_prompt_keywords"] = [label]
                 time.sleep(1); continue
         if time.monotonic() >= submitted_deadline:
@@ -185,6 +281,16 @@ def run(args):
             report["timeout"], report["result_category"] = True, "timeout"
     if report["result_category"] == "unsupported_ui" and adb.timed_out:
         report["timeout"], report["result_category"] = True, "timeout"
+    report["crash_events"] = restart_debug.collect_logcat(adb, start_epoch, args.package)
+    snapshot = restart_debug.app_snapshot(adb, args.package)
+    report["activity_class"] = snapshot.get("activity_class")
+    report["app_pids"] = snapshot.get("pids", [])
+    if logcat_has_known_otp_error(adb, start_epoch):
+        report["known_screen_markers"]["otp_error_marker_visible"] = True
+        if not report["logged_in"] and report["result_category"] not in {
+            "environment_unsafe", "security_challenge", "captcha_shown", "foreign_ui",
+        }:
+            report["result_category"] = "otp_rejected"
     return report
 
 def main():
