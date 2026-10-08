@@ -1,0 +1,71 @@
+name: Analyze Released XHS WeChat Xrefs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/analyze-released-xhs-wechat.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download released custom APK
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 'https://github.com/KiriKira/xhs-apk-custom/releases/download/v1.0.0/xhs-fold8-custom.apk' -o app.apk
+          sha256sum app.apk
+      - name: Install androguard
+        run: pip install androguard
+      - name: Scan xrefs
+        shell: bash
+        run: |
+          python - <<'PY'
+          from androguard.misc import AnalyzeAPK
+          from pathlib import Path
+          a, ds, dx = AnalyzeAPK("app.apk")
+          out=[]
+          targets=("Lcom/tencent/mm/opensdk/","Lcom/tencent/mm/sdk/")
+          names={"sendReq","createWXAPI","registerApp"}
+          for ma in dx.get_methods():
+              m=ma.get_method()
+              if m.get_class_name().startswith("Lcom/tencent/mm/"):
+                  continue
+              hits=[]
+              try:
+                  for _, callee, off in ma.get_xref_to():
+                      cm=callee.get_method()
+                      if any(t in cm.get_class_name() for t in targets) or cm.get_name() in names:
+                          hits.append((off,cm.get_class_name(),cm.get_name(),cm.get_descriptor()))
+              except Exception:
+                  pass
+              if not hits:
+                  continue
+              out.append(f"\n===== {m.get_class_name()}->{m.get_name()}{m.get_descriptor()} =====\n")
+              for off,c,n,d in hits:
+                  out.append(f"XREF @{off:#x}: {c}->{n}{d}\n")
+              code=m.get_code()
+              if code:
+                  out.append("DISASM:\n")
+                  for ins in code.get_bc().get_instructions():
+                      out.append(f"{ins.get_name():24s} {ins.get_output()}\n")
+          out.append("\n===== WECHAT STRINGS =====\n")
+          vals=set()
+          for sa in dx.get_strings():
+              v=sa.get_value()
+              lv=v.lower()
+              if any(k in lv for k in ("wechat","weixin","com.tencent.mm","wxapi","wx_","wx")) and len(v)<300:
+                  vals.add(v)
+          out.extend(v+"\n" for v in sorted(vals))
+          Path("xhs-wechat-xrefs.txt").write_text("".join(out), errors="ignore")
+          PY
+      - uses: actions/upload-artifact@v6
+        with:
+          name: released-xhs-wechat-xrefs
+          path: xhs-wechat-xrefs.txt
+          retention-days: 2
