@@ -86,10 +86,12 @@ def tap_unique_resource(adb, root, package, suffix):
     nodes = resource_nodes(root, package, suffix)
     if len(nodes) != 1:
         return False, len(nodes)
-    target = ui.clickable(root, nodes[0], package)
-    if target is None:
+    if suffix not in (HOME_TAB_ID, ME_TAB_ID):
         return False, 0
-    return adb.tap(target.attrib.get("bounds")), 1
+    bounds = parse_bounds(nodes[0].attrib.get("bounds"))
+    if not bounds or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        return False, 0
+    return adb.tap(nodes[0].attrib.get("bounds")), 1
 
 
 def feed_node(root, package):
@@ -107,20 +109,16 @@ def safe_card(root, package, feed):
     _, feed_top, _, feed_bottom = feed_bounds
     candidates = []
     for node in resource_nodes(root, package, CARD_ID):
-        if "cardview" not in node.attrib.get("class", "").lower():
-            continue
         if not is_descendant(node, feed, parents):
             continue
         bounds = parse_bounds(node.attrib.get("bounds"))
         if not bounds or bounds[1] < feed_top or bounds[3] > feed_bottom:
             continue
-        target = ui.clickable(root, node, package)
-        if target is None or target is feed or not is_descendant(target, feed, parents):
+        if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
             continue
-        target_id = target.attrib.get("resource-id", "")
-        if re.search(r"(?:like|collect|comment|share|follow|publish|post)$", target_id, re.I):
-            continue
-        candidates.append((bounds[1], bounds[0], node, target))
+        # CardView inherits FrameLayout and accessibility need not expose its
+        # custom class or clickable flag. Tap the known card body, not a footer.
+        candidates.append((bounds[1], bounds[0], node, node))
     if not candidates:
         return None, None
     candidates.sort(key=lambda item: (item[0], item[1]))

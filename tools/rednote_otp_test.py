@@ -106,7 +106,8 @@ def tap_me_tab(adb, root, package):
     nodes = resource_nodes(root, package, ME_TAB_ID)
     if len(nodes) != 1: return False, len(nodes)
     node = nodes[0]
-    if not node.attrib.get("class", "").endswith("TabView"): return False, 1
+    # TabView inherits ConstraintLayout; accessibility may expose ViewGroup.
+    # Its unique app-owned resource ID identifies this navigation target.
     bounds = ui.BOUNDS.fullmatch(node.attrib.get("bounds", ""))
     if not bounds: return False, 1
     x1, y1, x2, y2 = map(int, bounds.groups())
