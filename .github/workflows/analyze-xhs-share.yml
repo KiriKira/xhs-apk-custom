@@ -1,0 +1,103 @@
+name: Analyze XHS WeChat Share
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/analyze-xhs-share.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download current CI base APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://dl.coolapk.com/down?pn=com.xingin.xhs&id=15276&v=MTUyNzY&type=apk&from=market-v13&vc=9334801&nd=0&h=3c30e27f'
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' "$URL" -o base.apk
+          sha256sum base.apk | tee base.sha256
+
+      - name: Install JADX
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, urllib.request
+          api='https://api.github.com/repos/skylot/jadx/releases/latest'
+          with urllib.request.urlopen(api) as r:
+              data=json.load(r)
+          asset=next(a for a in data['assets'] if a['name'].startswith('jadx-') and a['name'].endswith('.zip') and 'gui' not in a['name'])
+          print(asset['browser_download_url'])
+          open('jadx_url.txt','w').write(asset['browser_download_url'])
+          PY
+          curl -L --fail "$(cat jadx_url.txt)" -o jadx.zip
+          unzip -q jadx.zip -d jadx-bin
+          echo "$PWD/jadx-bin/bin" >> "$GITHUB_PATH"
+
+      - name: Decompile
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p jadx-out
+          jadx --no-res -d jadx-out base.apk
+
+      - name: Build WeChat share report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('jadx-out/sources')
+          pats=[
+            'IWXAPI','SendMessageToWX','WXMediaMessage','registerApp(','sendReq(',
+            'com.tencent.mm.opensdk','WXSceneSession','WXSceneTimeline',
+            'createWXAPI','wxapi','wechat','WeChat','微信'
+          ]
+          files=[]
+          for p in root.rglob('*.java'):
+              try: s=p.read_text(errors='ignore')
+              except: continue
+              if any(x in s for x in pats):
+                  files.append((p,s))
+          out=[]
+          out.append(Path('base.sha256').read_text())
+          out.append(f'candidate_files={len(files)}\n')
+          for p,s in files:
+              lines=s.splitlines()
+              hitidx=[i for i,l in enumerate(lines) if any(x in l for x in pats)]
+              if not hitidx: continue
+              out.append(f'\n===== FILE {p} =====\n')
+              # merge nearby ranges
+              ranges=[]
+              for i in hitidx:
+                  a=max(0,i-18); b=min(len(lines),i+25)
+                  if ranges and a <= ranges[-1][1]+4:
+                      ranges[-1]=(ranges[-1][0],max(ranges[-1][1],b))
+                  else:
+                      ranges.append((a,b))
+              for a,b in ranges[:12]:
+                  for j in range(a,b):
+                      out.append(f'{j+1:5d}: {lines[j]}\n')
+                  out.append('\n')
+          Path('wechat-share-report.txt').write_text(''.join(out), errors='ignore')
+          PY
+          # Focused symbol indexes
+          grep -RInE 'IWXAPI|SendMessageToWX|WXMediaMessage|createWXAPI|registerApp\(|sendReq\(' jadx-out/sources > wechat-symbols.txt || true
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: xhs-wechat-share-analysis
+          path: |
+            wechat-share-report.txt
+            wechat-symbols.txt
+            base.sha256
+          retention-days: 2
