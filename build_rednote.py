@@ -33,6 +33,7 @@ from rednote_signature_compat import (
 from rednote_ad_patch import ADAPTER, patch_feed_bind, verify_compiled_feed_patch
 from rednote_ad_display_helper import build_ad_display_dex
 from rednote_resource_package import rename_resource_package
+from rednote_launcher_icon import prepare_launcher_icons
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1329,6 +1330,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Hide discovery-feed ad cards after original binding; preserve requests and feed data",
     )
     parser.add_argument(
+        "--launcher-icon", type=Path,
+        help="Replace the pinned launcher PNGs using this artwork and its sibling -foreground.png",
+    )
+    parser.add_argument(
         "--signature-compat",
         action="store_true",
         help=(
@@ -1518,6 +1523,11 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 source_zip.read("resources.arsc"), old_package, application_id
             )
         resource_package_audit = {"enabled": True, "audit": resource_audit}
+        icon_replacements, icon_audit = ({}, {"enabled": False})
+        if args.launcher_icon:
+            icon_replacements, icon_audit = prepare_launcher_icons(
+                merge_input, args.launcher_icon.expanduser().resolve()
+            )
 
         touched_dex_names: set[str] = set()
         process_gate_path = find_smali_class(decoded_dir, "ddc.a")
@@ -1658,6 +1668,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             if "AndroidManifest.xml" not in baseline_names:
                 raise BuildError("Baseline APK has no AndroidManifest.xml")
             changed_entries = {"AndroidManifest.xml", "resources.arsc"}
+            changed_entries.update(icon_replacements)
             missing_dex = touched_dex_names - baseline_names
             if missing_dex:
                 raise BuildError(f"Touched DEX not present in merged input: {sorted(missing_dex)}")
@@ -1675,7 +1686,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             changed_entries,
             candidate,
             added_entries=signature_compat_added_entries,
-            replacement_entries={"resources.arsc": renamed_resources},
+            replacement_entries={"resources.arsc": renamed_resources, **icon_replacements},
         )
         # The comparison baseline for XAPK runs is the APKEditor-merged file. Its
         # resource table and split layout already differ from the original splits.
@@ -1757,6 +1768,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 "touchedDexEntries": sorted(fold_touched_dex_names),
             },
             "feedAdDisplay": feed_ad_audit,
+            "launcherIcon": icon_audit,
             "mainProcessCompatibility": {
                 **process_gate_audit,
                 "touchedDexEntry": process_gate_dex,

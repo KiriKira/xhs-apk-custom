@@ -7,7 +7,7 @@ The REDnote build is independent of the domestic `build_xhs.py` workflow and rel
 | Package | `com.xingin.xhs` | `com.kirikira.rednote.fold` |
 | Source versionCode | `9334801` | `9481803` (9.48.1) |
 | APK asset | `xhs-fold8-custom.apk` | `rednote-fold-custom.apk` |
-| Release tag | `v1.0.0` | `rednote-v9.48.1-4` (fixed identity + ads hidden); `rednote-v9.48.1-3` (fixed identity, ads shown) |
+| Release tag | `v1.0.0` | `rednote-v9.48.1-5` (stable: 小K书 icon, ads hidden, package compatibility); `rednote-v9.48.1-4` (ads hidden); `rednote-v9.48.1-3` (package compatibility, ads shown) |
 | Workflow | `build-xhs.yml` | `build-rednote.yml` |
 
 Both outputs use the repository's existing `ks_pkcs12.keystore`, alias `jhc`. The actual APK signer SHA-256 is `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4`, independently verified against the domestic v1.0.0 release APK.
@@ -34,6 +34,8 @@ owner reports no recurrence of the previous card crash so far.
 
 The signature helper changes Java package-signature queries inside the app process; Android still verifies the output APK against the existing repository signing key. No model/manufacturer, installer, region, or native/server attestation patch was added.
 
+Release `rednote-v9.48.1-5` applies the 小K书 launcher icon from `assets/branding/xiaokshu.png`, keeps the discovery-feed ad display patch, and includes the package compatibility fix. The Android package, version metadata, and signer stay the same, so the build remains an in-place update for the existing REDnote clone.
+
 The builder preserves the original DEX/native payloads during split merging. The fold/signature configuration rebuilds `classes17.dex` and `classes4.dex` and adds its helper DEX. `--hide-feed-ads` additionally patches `classes19.dex` and adds a display helper DEX. Manifest and resource-table changes are included in the payload audit. All other merged payload hashes are verified. The release workflow independently inspects the compiled startup hook, helper package/certificate, application process, original main-process predicate, resource package, both layout gates, and the ad-display hook when enabled, then verifies APK signatures and 16 KiB alignment.
 
 The ad-display patch preserves the original card bind and requests, then hides cards marked as ads in the discovery feed. It restores a recycled card's dimensions before rebinding. See [scope and evidence](FEED_AD_DISPLAY_PATCH.md).
@@ -48,7 +50,7 @@ The ad-display patch preserves the original card bind and requests, then hides c
 
 Android blocks a lower `versionCode` during ordinary installation. Both REDnote revisions deliberately keep `versionCode=9481803` and `versionName=9.48.1`; only the Release tags count patch revisions. The package ID and cryptographic signing identity also remain identical. This allows direct replacement in either direction instead of uninstalling the app.
 
-- Fixed ad-display revision: `rednote-v9.48.1-4`.
+- Stable revision with the 小K书 launcher icon, ad-display patch, and package compatibility fix: `rednote-v9.48.1-5`.
 - [Return to the fixed build with ads shown](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-3/rednote-fold-custom.apk).
 
 Publishing checks package, versions and signer; a separate rollback VM is no longer a release gate,
@@ -59,6 +61,6 @@ are retained. The historical checks below remain evidence for their specific APK
 
 ## Building and publishing
 
-Run **Build and Release REDnote Fold Custom** manually. `publish: true` creates a new Pre-release after build validation; `publish: false` only builds. `hide_feed_ads` controls the optional display patch. Each build uses the pinned XAPK and the current package-compatibility configuration; importing the old unfixed test APK is no longer supported. Choose a fresh `rednote-v9.48.1-<revision>` tag. Relevant main-branch changes build without publishing, and `rednote-v*` tag pushes publish.
+Run **Build and Release REDnote Fold Custom** manually. `publish: true` publishes after build validation; `publish: false` only builds. The `prerelease` input defaults to `true` to preserve the prior behavior; set it to `false` to publish a stable release. `hide_feed_ads` controls the discovery-feed display patch, and publishing requires it to be enabled. Each build uses the pinned XAPK and current package-compatibility configuration. Choose a fresh `rednote-v9.48.1-<revision>` tag. Relevant main-branch changes build without publishing, and `rednote-v*` tag pushes publish as pre-releases.
 
-The workflow publishes the APK, build report and `SHA256SUMS`. It refuses to replace an existing release's assets and uses `--prerelease --latest=false` to preserve the domestic release's Latest designation. No phone number or SMS code is needed by the production build or included in release assets.
+The workflow publishes the APK, build report and `SHA256SUMS`. It refuses to replace an existing release's assets and always uses `--latest=false` to preserve the domestic release's Latest designation. No rollback VM, phone number, or SMS code is required by the production build or included in release assets.

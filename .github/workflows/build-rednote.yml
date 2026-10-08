@@ -24,11 +24,13 @@ on:
       - "tools/build_rednote_package_fix.py"
       - "rednote_package_compat.py"
       - "rednote_resource_package.py"
+      - "rednote_launcher_icon.py"
+      - "assets/branding/**"
       - ".github/workflows/build-rednote.yml"
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish this ads-enabled build as a GitHub Release
+        description: Publish this ad-display-patched build as a GitHub Release
         type: boolean
         required: true
         default: true
@@ -36,7 +38,12 @@ on:
         description: Release tag to create or use
         type: string
         required: true
-        default: rednote-v9.48.1-4
+        default: rednote-v9.48.1-5
+      prerelease:
+        description: Mark the published GitHub Release as a pre-release
+        type: boolean
+        required: true
+        default: true
       hide_feed_ads:
         description: Hide discovery-feed ad cards
         type: boolean
@@ -79,7 +86,7 @@ jobs:
       - name: Require ads enabled for release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && !inputs.hide_feed_ads }}
         run: |
-          echo "Publishing is limited to the ads-enabled build; turn off publish to build without the ad patch." >&2
+          echo "Publishing requires the discovery-feed ad patch; turn off publish to build without it." >&2
           exit 1
 
       - name: Install Android SDK tools
@@ -111,6 +118,13 @@ jobs:
 
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
+
+      - name: Ensure launcher icon packaging tool
+        run: |
+          if ! command -v convert >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y imagemagick
+          fi
 
       - name: Run Rednote unit tests
         run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch
@@ -148,6 +162,7 @@ jobs:
             --fold-layout
             --signature-compat
             --keep-original-main-process
+            --launcher-icon assets/branding/xiaokshu.png
             --decode-dex classes17.dex
             --decode-dex classes4.dex
             --output output_apks/rednote-fold-custom.apk
@@ -173,9 +188,9 @@ jobs:
           unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.SF'
           unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.RSA'
           if [[ "$HIDE_FEED_ADS" == "true" ]]; then
-            python tools/verify_rednote_release.py "$APK" "$REPORT" --expect-ads
+            python tools/verify_rednote_release.py "$APK" "$REPORT" --expect-ads --expect-launcher-icon
           else
-            python tools/verify_rednote_release.py "$APK" "$REPORT" --expect-no-ads
+            python tools/verify_rednote_release.py "$APK" "$REPORT" --expect-no-ads --expect-launcher-icon
           fi
 
           (
@@ -214,6 +229,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           DISPATCH_TAG: ${{ inputs.tag }}
+          IS_PRERELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
@@ -235,13 +251,13 @@ jobs:
             sha256sum --check SHA256SUMS
           )
           cat > release-notes.md <<'NOTES'
-          REDnote fold build with discovery-feed ad cards hidden, the source main-process name preserved, and the compiled resource-table package name set to `com.kirikira.rednote.fold`.
+          REDnote 9.48.1 fold build with the 小K书 launcher icon, discovery-feed ad cards hidden, the source main-process name preserved, and the compiled resource-table package name set to `com.kirikira.rednote.fold`.
 
           The application keeps the source process name `com.xingin.xhs` and the original main-process predicate. Its resource table uses the clone package name `com.kirikira.rednote.fold`; this lets the clone keep its distinct Android package identity while preserving the source process behavior.
 
-          The feed ad patch sets ad views to `GONE` and their item height to zero, then restores the source view state before rebinding. No feed request or feed data is changed. Remaining feed spacing has not been rechecked for this build and is not claimed here.
+          The launcher icon uses the 小K书 branding. The feed ad patch hides ad cards and restores a recycled card's source view state before rebinding. It does not change feed requests or data. The package-compatibility fix preserves the original main-process behavior while keeping the installed package at `com.kirikira.rednote.fold`.
 
-          Android `versionCode` 9481803 and `versionName` 9.48.1 remain unchanged; Release tags identify patch revisions. The package name, version metadata, and signing certificate remain compatible with [rednote-v9.48.1-3](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-3/rednote-fold-custom.apk) for in-place rollback while retaining app data.
+          Android `versionCode` 9481803, `versionName` 9.48.1, package name, and signing certificate remain unchanged. Release tags identify patch revisions.
 
           No SMS or OTP flow was run for this build. No user phone number or verification code is included in the release assets.
 
@@ -253,9 +269,13 @@ jobs:
             release-assets/SHA256SUMS
             release-assets/rednote-fold-build-report.json
           )
-          gh release create "$tag" "${assets[@]}" \
+          release_flags=(
             --title "$tag" \
             --notes-file release-notes.md \
-            --prerelease \
             --latest=false \
             --target "$GITHUB_SHA"
+          )
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$tag" "${assets[@]}" "${release_flags[@]}"

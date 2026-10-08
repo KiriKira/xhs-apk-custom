@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from rednote_resource_package import package_records
+from rednote_launcher_icon import verify_launcher_icons
 from rednote_ad_patch import verify_compiled_feed_patch
 from tools.build_rednote_package_fix import verify_manifest_process
 from verify_fold_dex import verify_fold_gates
@@ -33,7 +34,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def verify(apk, report_path, expect_ads=None):
+def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False):
     report = json.loads(report_path.read_text())
     require(report["input"]["sha256"] == SOURCE_SHA, "Unexpected source file")
     require(report["input"]["signerCertificateSha256"] == [SOURCE_CERT], "Unexpected source signer")
@@ -92,6 +93,14 @@ def verify(apk, report_path, expect_ads=None):
         "AndroidManifest.xml", "classes17.dex", "classes4.dex", compat["helperDexEntry"]
     }
     expected_entries.add("resources.arsc")
+    icon = report.get("launcherIcon", {"enabled": False})
+    require(type(icon.get("enabled")) is bool, "Invalid launcher icon flag")
+    if expect_launcher_icon:
+        require(icon["enabled"] is True, "Launcher icon branding is disabled")
+    if icon["enabled"]:
+        with zipfile.ZipFile(apk) as archive:
+            report["compiledLauncherIconVerification"] = verify_launcher_icons(archive, icon)
+        expected_entries.update(entry["path"] for entry in icon["entries"])
     ads = report.get("feedAdDisplay", {"enabled": False})
     require(type(ads.get("enabled")) is bool, "Invalid ad patch flag")
     if expect_ads is not None:
@@ -160,6 +169,7 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--expect-ads", action="store_true")
     group.add_argument("--expect-no-ads", action="store_true")
+    parser.add_argument("--expect-launcher-icon", action="store_true")
     args = parser.parse_args()
     expected = True if args.expect_ads else False if args.expect_no_ads else None
-    verify(args.apk, args.report, expected)
+    verify(args.apk, args.report, expected, args.expect_launcher_icon)

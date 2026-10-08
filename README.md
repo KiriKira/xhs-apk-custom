@@ -40,7 +40,7 @@ The persistent test signing key is kept in `ks_pkcs12.keystore` so future custom
 
 The APKPure REDnote 9.48.1 base is built as `rednote-fold-custom.apk`, package `com.kirikira.rednote.fold`, using the same signing key. It can coexist with the domestic `com.xingin.xhs` build.
 
-Ad-display build with the package-compatibility fix: `rednote-v9.48.1-4` (Pre-release).
+Stable release: `rednote-v9.48.1-5` (小K书 launcher icon, discovery-feed ad display patch, and package-compatibility fix).
 
 Package-compatibility build without the ad-display patch: https://github.com/KiriKira/xhs-apk-custom/releases/tag/rednote-v9.48.1-3
 
@@ -48,7 +48,7 @@ REDnote releases retain Android `versionCode=9481803`, `versionName=9.48.1`, the
 
 The builder now preserves the original main-process name and predicates while keeping the distinct installed package. It also aligns the resource-table package name with the installed package. The account owner reports that the `-3` fix has not reproduced the previous card crash so far.
 
-`.github/workflows/build-rednote.yml` builds this configuration separately and can publish a new REDnote release on manual dispatch or a `rednote-v*` tag push. It preserves the existing domestic release and assets.
+`.github/workflows/build-rednote.yml` builds this configuration separately and can publish a new REDnote release on manual dispatch or a `rednote-v*` tag push. Manual publishing defaults to a pre-release for compatibility; the `prerelease` input can publish a stable release. It preserves the existing domestic release and assets.
 
 Historical builds reached the SMS verification page in ARM Waydroid. This does not establish logged-in cold-start behavior. See [source, patches and validation](docs/REDNOTE_RELEASE.md) and [ad classification and layout](docs/FEED_AD_DISPLAY_PATCH.md).
 
