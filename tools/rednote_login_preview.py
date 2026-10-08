@@ -322,6 +322,13 @@ def run(serial, package):
                         report["steps"].append({"step": "open_country_selector"})
                         continue
                     if country_opened and not phone_field:
+                        did_click, label, count = ui.select_cn_country(adb, root, package)
+                        if did_click:
+                            report["steps"].append({"step": "select_country", "label": label})
+                            continue
+                        if count:
+                            report["result_category"] = "country_selector_unresolved"
+                            break
                         # The global picker may label China differently; its calling code is stable.
                         did_click, label, count = scoped_action(adb, root, package, ("+86",), preferred=True)
                         if count == 0:

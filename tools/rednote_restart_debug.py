@@ -251,6 +251,9 @@ def parse_logcat(raw_text, since_epoch, target_package):
             "exception_type": exception_types[0] if exception_types else "unknown",
             "caused_by": exception_types[1:6],
             "java_frames": frames[:12],
+            "application_frames": [frame for frame in frames if not frame["class"].startswith(
+                ("android.", "com.android.", "java.", "javax.", "dalvik.", "kotlin.", "kotlinx.")
+            )][:12],
         }
         if component:
             event["intent_component"] = component

@@ -99,6 +99,46 @@ def country_state(root, package=None):
     if len(codes) > 1: return "picker"
     if codes == {"+86"} or any(t in COUNTRY_NAMES for t in texts): return "cn"
     return "other" if codes else "unknown"
+
+def select_cn_country(adb, root, package):
+    """Tap only a known REDnote mainland row paired with +86 in its row container."""
+    if not package_visible(root, package): return False, None, 0
+    parents = {child: parent for parent in root.iter() for child in parent}
+    mainland_labels = {
+        "中国大陆", "中国（大陆）", "中国(大陆)", "中国大陆地区",
+        "china's mainland", "china’s mainland", "mainland china", "china mainland",
+    }
+    candidates = []
+    for label_node in root.iter():
+        if (not visible(label_node) or label_node.attrib.get("package") != package
+                or not label_node.attrib.get("resource-id", "").endswith(":id/login_text_1")
+                or norm(label_node.attrib.get("text", "")) not in mainland_labels):
+            continue
+        row = parents.get(label_node)
+        if (row is None or not visible(row) or row.attrib.get("package") != package
+                or not row.attrib.get("class", "").endswith("FrameLayout")
+                or row.attrib.get("enabled", "true") != "true"):
+            continue
+        paired_codes = [node for node in list(row)
+                        if visible(node) and node.attrib.get("package") == package
+                        and node.attrib.get("resource-id", "").endswith(":id/login_text_2")
+                        and norm(node.attrib.get("text", "")) == "+86"]
+        if len(paired_codes) != 1:
+            continue
+        bounds = BOUNDS.fullmatch(row.attrib.get("bounds", ""))
+        if not bounds:
+            continue
+        x1, y1, x2, y2 = map(int, bounds.groups())
+        if x2 <= x1 or y2 <= y1:
+            continue
+        candidates.append((y1, x1, row.attrib["bounds"]))
+    if not candidates: return False, None, 0
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    # A picker can expose duplicate mainland rows; they have identical meaning.
+    # Select the uppermost visible row and report one semantic match.
+    clicked = adb.tap(candidates[0][2])
+    return clicked, "China's Mainland +86", 1
+
 def code_targets(root, package=None):
     found = {}
     for n in root.iter():
@@ -204,6 +244,11 @@ def run(args):
                         else fields(root, (), phone_field_id, phone_field_bounds, args.package))
         if country_opened and not phone_fields:
             if country_selected: break
+            clicked, label, count = select_cn_country(adb, root, args.package)
+            if clicked:
+                country_selected = True; report["matched_prompt_keywords"] = [label]
+                time.sleep(1); continue
+            if count: break
             clicked, label, count = action(adb, root, COUNTRY_NAMES, package=args.package)
             if clicked:
                 country_selected = True; report["matched_prompt_keywords"] = [label]
