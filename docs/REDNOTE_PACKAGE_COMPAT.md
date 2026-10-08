@@ -58,3 +58,23 @@ native 库路径初始化。这个数量是目前的扫描下限，仍需检查�
 本地进程比较，并对版本、方法和比较形状进行校验。业务协议常量不能混入这一类。
 保留原主进程标签可用于受控对照，但私有组件 `android:process=":name"` 仍根据
 Manifest 新包名展开，不能当成恢复完整原包身份的方案。
+
+## 已发布的并行实机候选
+
+按用户要求，已发布 [rednote-v9.48.1-3 Pre-release](https://github.com/KiriKira/xhs-apk-custom/releases/tag/rednote-v9.48.1-3)。
+基于上一版 -1 原文件，采用上述保留原主进程标签的兼容候选：
+
+1. application 主进程标签设为 `com.xingin.xhs`。
+2. 定点恢复 `ddc.a.invoke()` 的原主进程比较，只改 DEX 已有字符串索引及 checksum/signature header。
+3. `resources.arsc` 中唯一 0x7f 包的名字与安装包名对齐；数字资源 ID 和名称字段以外字节不变。
+
+安装包名仍是 `com.kirikira.rednote.fold`，Release signer、Android versionCode 9481803
+和 versionName 9.48.1 均不变；本候选不含广告补丁。构建检查确认只有 Manifest、
+classes17.dex、resources.arsc 改变，其他 26,448 个 payload 文件内容保持一致。
+APK SHA-256：`6645d47a0e7769caf0f586eb6dbed1fd4a55006769dfd5614ee85be979deccdb`。
+
+上一版测试会话 [37710732106](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37710732106)
+请求一次短信并输入用户提供的新验证码后，仍停在 `OverseasLoginActivity`。
+有限页面标记没有确认登录成功，也没有捕获崩溃或验证码错误，因此未执行登录后重启测试。
+这不能当作卡片闪退的复现，也不能当作风险提示已绕过或登录成功的证据。
+新候选的冷启动效果等待实机测试；覆盖安装与回退另行验证。
