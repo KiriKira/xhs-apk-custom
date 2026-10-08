@@ -7,7 +7,7 @@ The REDnote build is independent of the domestic `build_xhs.py` workflow and rel
 | Package | `com.xingin.xhs` | `com.kirikira.rednote.fold` |
 | Source versionCode | `9334801` | `9481803` (9.48.1) |
 | APK asset | `xhs-fold8-custom.apk` | `rednote-fold-custom.apk` |
-| Release tag | `v1.0.0` | `rednote-v9.48.1-5` (stable: 小K书 icon, ads hidden, package compatibility); `rednote-v9.48.1-4` (ads hidden); `rednote-v9.48.1-3` (package compatibility, ads shown) |
+| Release tag | `v1.0.0` | `rednote-v9.48.1-6` (stable: 小K书 icon, ads hidden, package compatibility, WeChat sharing); `rednote-v9.48.1-5` (previous stable build) |
 | Workflow | `build-xhs.yml` | `build-rednote.yml` |
 
 Both outputs use the repository's existing `ks_pkcs12.keystore`, alias `jhc`. The actual APK signer SHA-256 is `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4`, independently verified against the domestic v1.0.0 release APK.
@@ -50,7 +50,7 @@ The ad-display patch preserves the original card bind and requests, then hides c
 
 Android blocks a lower `versionCode` during ordinary installation. Both REDnote revisions deliberately keep `versionCode=9481803` and `versionName=9.48.1`; only the Release tags count patch revisions. The package ID and cryptographic signing identity also remain identical. This allows direct replacement in either direction instead of uninstalling the app.
 
-- Stable revision with the 小K书 launcher icon, ad-display patch, and package compatibility fix: `rednote-v9.48.1-5`.
+- Stable revision with the 小K书 launcher icon, ad-display patch, package compatibility fix and WeChat sharing: `rednote-v9.48.1-6`.
 - [Return to the fixed build with ads shown](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-3/rednote-fold-custom.apk).
 
 Publishing checks package, versions and signer; a separate rollback VM is no longer a release gate,
@@ -61,10 +61,12 @@ are retained. The historical checks below remain evidence for their specific APK
 
 ## Building and publishing
 
-The optional [WeChat share identity experiment](WECHAT_SHARE_IDENTITY.md) is
-published separately as `rednote-v9.48.1-6`. It defaults off and requires the
-manual `wechat_share_identity` input plus `prerelease: true`. The stable `-5`
-assets remain available for overlay rollback.
+The [WeChat share identity configuration](WECHAT_SHARE_IDENTITY.md) is included
+in stable release `rednote-v9.48.1-6` and enabled by default in production builds.
+**微信分享需要同时安装官方国际版 REDnote（Google Play 版），与小K书共存。**
+The account owner confirmed successful sharing with that configuration. The
+manual `wechat_share_identity` input can disable it; `-5` remains available for
+overlay rollback.
 
 Run **Build and Release REDnote Fold Custom** manually. `publish: true` publishes after build validation; `publish: false` only builds. The `prerelease` input defaults to `true` to preserve the prior behavior; set it to `false` to publish a stable release. `hide_feed_ads` controls the discovery-feed display patch, and publishing requires it to be enabled. Each build uses the pinned XAPK and current package-compatibility configuration. Choose a fresh `rednote-v9.48.1-<revision>` tag. Relevant main-branch changes build without publishing, and `rednote-v*` tag pushes publish as pre-releases.
 

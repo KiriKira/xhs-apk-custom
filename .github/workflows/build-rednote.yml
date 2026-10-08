@@ -52,10 +52,10 @@ on:
         required: true
         default: true
       wechat_share_identity:
-        description: Experiment with declaring the official package for WeChat shares
+        description: Declare the official international REDnote package for WeChat shares
         type: boolean
         required: true
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -69,7 +69,7 @@ jobs:
       contents: read
     env:
       HIDE_FEED_ADS: ${{ github.event_name != 'workflow_dispatch' || inputs.hide_feed_ads }}
-      WECHAT_SHARE_IDENTITY: ${{ github.event_name == 'workflow_dispatch' && inputs.wechat_share_identity }}
+      WECHAT_SHARE_IDENTITY: ${{ github.event_name != 'workflow_dispatch' || inputs.wechat_share_identity }}
     outputs:
       hide_feed_ads: ${{ steps.build_variant.outputs.hide_feed_ads }}
       wechat_share_identity: ${{ steps.build_variant.outputs.wechat_share_identity }}
@@ -93,12 +93,6 @@ jobs:
         run: |
           echo "hide_feed_ads=$HIDE_FEED_ADS" >> "$GITHUB_OUTPUT"
           echo "wechat_share_identity=$WECHAT_SHARE_IDENTITY" >> "$GITHUB_OUTPUT"
-
-      - name: Keep WeChat identity experiment in pre-release
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.wechat_share_identity && !inputs.prerelease }}
-        run: |
-          echo "The WeChat share identity experiment must be published as a pre-release." >&2
-          exit 1
 
       - name: Require ads enabled for release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && !inputs.hide_feed_ads }}
@@ -299,9 +293,9 @@ jobs:
           if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
             cat >> release-notes.md <<'NOTES'
 
-          **WeChat share identity experiment:** Only SendMessageToWX requests (command 2) targeting WeChat declare `com.xingin.xhs` instead of the installed clone package. The existing checksum uses that same declared package. Original requests, media and AppID are retained. App registration, token acquisition, actual calling UID, cryptographic APK signer, login/payment requests and callback routing are unchanged.
+          **WeChat sharing:** Only SendMessageToWX requests (command 2) targeting WeChat declare `com.xingin.xhs` instead of the installed clone package. The existing checksum uses that same declared package. Original requests, media and AppID are retained. App registration, token acquisition, actual calling UID, cryptographic APK signer, login/payment requests and callback routing are unchanged.
 
-          This tests whether a coinstalled official `com.xingin.xhs` app satisfies WeChat's registered-package/signature lookup. Install the official app alongside 小K书 before testing. Acceptance has not been tested; WeChat may reject the real caller/token identity, and callbacks may go to the official app. This does not modify WeChat or system signature checks.
+          **WeChat sharing requires the official international REDnote (Google Play edition, package `com.xingin.xhs`) installed alongside 小K书.** The account owner confirmed successful WeChat sharing with this configuration in release `rednote-v9.48.1-6`. Callbacks may return to the official REDnote app. [Install official international REDnote](https://play.google.com/store/apps/details?id=com.xingin.xhs).
 
           To return to the stable build, overlay-install [rednote-v9.48.1-5](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-5/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
           NOTES

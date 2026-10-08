@@ -40,7 +40,9 @@ The persistent test signing key is kept in `ks_pkcs12.keystore` so future custom
 
 The APKPure REDnote 9.48.1 base is built as `rednote-fold-custom.apk`, package `com.kirikira.rednote.fold`, using the same signing key. It can coexist with the domestic `com.xingin.xhs` build.
 
-Stable release: `rednote-v9.48.1-5` (小K书 launcher icon, discovery-feed ad display patch, and package-compatibility fix).
+Stable release: `rednote-v9.48.1-6` (小K书 launcher icon, discovery-feed ad display patch, package-compatibility fix, and WeChat sharing).
+
+**微信分享需要同时安装官方国际版 REDnote（Google Play 版），与小K书共存。** The account owner confirmed sharing in this configuration. See [WeChat sharing](docs/WECHAT_SHARE_IDENTITY.md).
 
 Package-compatibility build without the ad-display patch: https://github.com/KiriKira/xhs-apk-custom/releases/tag/rednote-v9.48.1-3
 
