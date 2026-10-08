@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from rednote_resource_package import package_records
 from rednote_launcher_icon import verify_launcher_icons
+from rednote_wechat_share_patch import verify_compiled_wechat_share_identity
 from rednote_ad_patch import verify_compiled_feed_patch
 from tools.build_rednote_package_fix import verify_manifest_process
 from verify_fold_dex import verify_fold_gates
@@ -34,7 +35,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False):
+def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect_wechat_share=None):
     report = json.loads(report_path.read_text())
     require(report["input"]["sha256"] == SOURCE_SHA, "Unexpected source file")
     require(report["input"]["signerCertificateSha256"] == [SOURCE_CERT], "Unexpected source signer")
@@ -93,6 +94,16 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False):
         "AndroidManifest.xml", "classes17.dex", "classes4.dex", compat["helperDexEntry"]
     }
     expected_entries.add("resources.arsc")
+    wechat_share = report.get("wechatShareIdentity", {"enabled": False})
+    require(type(wechat_share.get("enabled")) is bool, "Invalid WeChat share experiment flag")
+    if expect_wechat_share is not None:
+        require(wechat_share["enabled"] is expect_wechat_share, "Unexpected WeChat share identity variant")
+    if wechat_share["enabled"]:
+        require(wechat_share.get("realPackage") == PACKAGE, "Unexpected real WeChat caller package")
+        require(wechat_share.get("claimedPackage") == SOURCE_PACKAGE, "Unexpected declared WeChat package")
+        require(wechat_share.get("touchedDexEntry") == "classes4.dex", "Unexpected WeChat sender DEX")
+        report["compiledWechatShareIdentityVerification"] = verify_compiled_wechat_share_identity(apk, SOURCE_PACKAGE)
+        expected_entries.add(wechat_share["touchedDexEntry"])
     icon = report.get("launcherIcon", {"enabled": False})
     require(type(icon.get("enabled")) is bool, "Invalid launcher icon flag")
     if expect_launcher_icon:
@@ -170,6 +181,10 @@ if __name__ == "__main__":
     group.add_argument("--expect-ads", action="store_true")
     group.add_argument("--expect-no-ads", action="store_true")
     parser.add_argument("--expect-launcher-icon", action="store_true")
+    wxgroup = parser.add_mutually_exclusive_group()
+    wxgroup.add_argument("--expect-wechat-share-identity", action="store_true")
+    wxgroup.add_argument("--expect-no-wechat-share-identity", action="store_true")
     args = parser.parse_args()
     expected = True if args.expect_ads else False if args.expect_no_ads else None
-    verify(args.apk, args.report, expected, args.expect_launcher_icon)
+    expected_wechat = True if args.expect_wechat_share_identity else False if args.expect_no_wechat_share_identity else None
+    verify(args.apk, args.report, expected, args.expect_launcher_icon, expected_wechat)

@@ -25,6 +25,8 @@ on:
       - "rednote_package_compat.py"
       - "rednote_resource_package.py"
       - "rednote_launcher_icon.py"
+      - "rednote_wechat_share_patch.py"
+      - "test_rednote_wechat_share_patch.py"
       - "assets/branding/**"
       - ".github/workflows/build-rednote.yml"
   workflow_dispatch:
@@ -38,7 +40,7 @@ on:
         description: Release tag to create or use
         type: string
         required: true
-        default: rednote-v9.48.1-5
+        default: rednote-v9.48.1-6
       prerelease:
         description: Mark the published GitHub Release as a pre-release
         type: boolean
@@ -49,6 +51,11 @@ on:
         type: boolean
         required: true
         default: true
+      wechat_share_identity:
+        description: Experiment with declaring the official package for WeChat shares
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -62,8 +69,10 @@ jobs:
       contents: read
     env:
       HIDE_FEED_ADS: ${{ github.event_name != 'workflow_dispatch' || inputs.hide_feed_ads }}
+      WECHAT_SHARE_IDENTITY: ${{ github.event_name == 'workflow_dispatch' && inputs.wechat_share_identity }}
     outputs:
       hide_feed_ads: ${{ steps.build_variant.outputs.hide_feed_ads }}
+      wechat_share_identity: ${{ steps.build_variant.outputs.wechat_share_identity }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -81,7 +90,15 @@ jobs:
 
       - name: Record build variant
         id: build_variant
-        run: echo "hide_feed_ads=$HIDE_FEED_ADS" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "hide_feed_ads=$HIDE_FEED_ADS" >> "$GITHUB_OUTPUT"
+          echo "wechat_share_identity=$WECHAT_SHARE_IDENTITY" >> "$GITHUB_OUTPUT"
+
+      - name: Keep WeChat identity experiment in pre-release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.wechat_share_identity && !inputs.prerelease }}
+        run: |
+          echo "The WeChat share identity experiment must be published as a pre-release." >&2
+          exit 1
 
       - name: Require ads enabled for release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && !inputs.hide_feed_ads }}
@@ -127,7 +144,7 @@ jobs:
           fi
 
       - name: Run Rednote unit tests
-        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch
+        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch test_rednote_wechat_share_patch
 
       - name: Download and verify pinned source for a fresh build
         shell: bash
@@ -173,6 +190,9 @@ jobs:
           if [[ "$HIDE_FEED_ADS" == "true" ]]; then
             args+=(--hide-feed-ads --decode-dex classes19.dex)
           fi
+          if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
+            args+=(--wechat-share-official-package)
+          fi
           "${args[@]}"
 
       - name: Verify APK, report, package, signer, and 16 KiB alignment
@@ -187,11 +207,18 @@ jobs:
           aapt2 dump badging "$APK" | grep -F "package: name='com.kirikira.rednote.fold' versionCode='9481803' versionName='9.48.1'"
           unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.SF'
           unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.RSA'
+          verify_args=(--expect-launcher-icon)
           if [[ "$HIDE_FEED_ADS" == "true" ]]; then
-            python tools/verify_rednote_release.py "$APK" "$REPORT" --expect-ads --expect-launcher-icon
+            verify_args+=(--expect-ads)
           else
-            python tools/verify_rednote_release.py "$APK" "$REPORT" --expect-no-ads --expect-launcher-icon
+            verify_args+=(--expect-no-ads)
           fi
+          if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
+            verify_args+=(--expect-wechat-share-identity)
+          else
+            verify_args+=(--expect-no-wechat-share-identity)
+          fi
+          python tools/verify_rednote_release.py "$APK" "$REPORT" "${verify_args[@]}"
 
           (
             cd output_apks
@@ -230,6 +257,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           DISPATCH_TAG: ${{ inputs.tag }}
           IS_PRERELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
+          WECHAT_SHARE_IDENTITY: ${{ needs.build.outputs.wechat_share_identity }}
         shell: bash
         run: |
           set -euo pipefail
@@ -263,6 +291,17 @@ jobs:
 
           Signed with `ks_pkcs12.keystore`, alias `jhc`; APK signer SHA-256 is `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4`.
           NOTES
+
+          if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
+            cat >> release-notes.md <<'NOTES'
+
+          **WeChat share identity experiment:** Only SendMessageToWX requests (command 2) targeting WeChat declare `com.xingin.xhs` instead of the installed clone package. The existing checksum uses that same declared package. Original requests, media and AppID are retained. App registration, token acquisition, actual calling UID, cryptographic APK signer, login/payment requests and callback routing are unchanged.
+
+          This tests whether a coinstalled official `com.xingin.xhs` app satisfies WeChat's registered-package/signature lookup. Install the official app alongside 小K书 before testing. Acceptance has not been tested; WeChat may reject the real caller/token identity, and callbacks may go to the official app. This does not modify WeChat or system signature checks.
+
+          To return to the stable build, overlay-install [rednote-v9.48.1-5](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-5/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
+          NOTES
+          fi
 
           assets=(
             release-assets/rednote-fold-custom.apk

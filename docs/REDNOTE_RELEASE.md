@@ -61,6 +61,11 @@ are retained. The historical checks below remain evidence for their specific APK
 
 ## Building and publishing
 
+The optional [WeChat share identity experiment](WECHAT_SHARE_IDENTITY.md) is
+published separately as `rednote-v9.48.1-6`. It defaults off and requires the
+manual `wechat_share_identity` input plus `prerelease: true`. The stable `-5`
+assets remain available for overlay rollback.
+
 Run **Build and Release REDnote Fold Custom** manually. `publish: true` publishes after build validation; `publish: false` only builds. The `prerelease` input defaults to `true` to preserve the prior behavior; set it to `false` to publish a stable release. `hide_feed_ads` controls the discovery-feed display patch, and publishing requires it to be enabled. Each build uses the pinned XAPK and current package-compatibility configuration. Choose a fresh `rednote-v9.48.1-<revision>` tag. Relevant main-branch changes build without publishing, and `rednote-v*` tag pushes publish as pre-releases.
 
 The workflow publishes the APK, build report and `SHA256SUMS`. It refuses to replace an existing release's assets and always uses `--latest=false` to preserve the domestic release's Latest designation. No rollback VM, phone number, or SMS code is required by the production build or included in release assets.

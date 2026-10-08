@@ -34,6 +34,7 @@ from rednote_ad_patch import ADAPTER, patch_feed_bind, verify_compiled_feed_patc
 from rednote_ad_display_helper import build_ad_display_dex
 from rednote_resource_package import rename_resource_package
 from rednote_launcher_icon import prepare_launcher_icons
+from rednote_wechat_share_patch import patch_send_share_identity
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1334,6 +1335,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Replace the pinned launcher PNGs using this artwork and its sibling -foreground.png",
     )
     parser.add_argument(
+        "--wechat-share-official-package", action="store_true",
+        help="Experiment: declare the source package only for WeChat SendMessageToWX requests",
+    )
+    parser.add_argument(
         "--signature-compat",
         action="store_true",
         help=(
@@ -1530,6 +1535,16 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             )
 
         touched_dex_names: set[str] = set()
+        wechat_share_audit = {"enabled": False}
+        if args.wechat_share_official_package:
+            wechat_sender = find_smali_class(
+                decoded_dir, "com.tencent.mm.opensdk.channel.MMessageActV2"
+            )
+            wechat_share_audit = patch_send_share_identity(wechat_sender, old_package)
+            wechat_share_audit["realPackage"] = application_id
+            wechat_dex = dex_name_for_smali(decoded_dir, wechat_sender)
+            wechat_share_audit["touchedDexEntry"] = wechat_dex
+            touched_dex_names.add(wechat_dex)
         process_gate_path = find_smali_class(decoded_dir, "ddc.a")
         process_gate_audit = patch_main_process_package_gate(
             process_gate_path, old_package, application_id,
@@ -1769,6 +1784,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             },
             "feedAdDisplay": feed_ad_audit,
             "launcherIcon": icon_audit,
+            "wechatShareIdentity": wechat_share_audit,
             "mainProcessCompatibility": {
                 **process_gate_audit,
                 "touchedDexEntry": process_gate_dex,
