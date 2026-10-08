@@ -357,7 +357,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/rednote_private_input.py generate --kind otp
-          python3 tools/rednote_private_input.py wait --kind otp --timeout 600
+          python3 tools/rednote_private_input.py wait --kind otp --timeout 1800
 
       - name: Submit the user OTP once
         if: env.NEED_OTP == 'true'

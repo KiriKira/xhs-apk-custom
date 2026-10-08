@@ -183,8 +183,8 @@ def main():
     wait.add_argument("--output", help="JSON path (defaults to the matching phone/OTP file in RUNNER_TEMP)")
     wait.set_defaults(func=wait_for_command)
     args = parser.parse_args()
-    if getattr(args, "timeout", 600) < 1 or getattr(args, "timeout", 600) > 600:
-        parser.error("--timeout must be between 1 and 600 seconds")
+    if getattr(args, "timeout", 600) < 1 or getattr(args, "timeout", 600) > 1800:
+        parser.error("--timeout must be between 1 and 1800 seconds")
     args.func(args)
 
 
