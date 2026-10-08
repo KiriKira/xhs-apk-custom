@@ -32,6 +32,7 @@ from rednote_signature_compat import (
 )
 from rednote_ad_patch import ADAPTER, patch_feed_bind, verify_compiled_feed_patch
 from rednote_ad_display_helper import build_ad_display_dex
+from rednote_resource_package import rename_resource_package
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -936,16 +937,17 @@ def patch_boolean_method(path: Path, method_name: str, value: bool = True) -> No
 
 
 def patch_main_process_package_gate(
-    path: Path, old_package: str, new_package: str
+    path: Path, old_package: str, new_package: str, *, preserve_original: bool = False
 ) -> dict[str, str]:
-    """Rebase the app's one hard-coded main-process name comparison.
+    """Validate the pinned process predicate, preserving or rebasing its name.
 
     Rednote 9.48.1 stores its current process name in ``ddc/b.b`` and compares
     that value to the source package in ``ddc/a.invoke()``. After a package
     clone, Android names the default process after the new package, so the app
     otherwise takes its subprocess initialization path in the main process.
-    Keep this scoped to that exact predicate; other source-package literals
-    may be external protocol names or SDK configuration and are left alone.
+    The preserve mode pairs the original predicate with an explicit source
+    application process label. Other source-package literals may be external
+    protocol names or SDK configuration and are left alone.
     """
     if old_package == new_package:
         raise BuildError("Main-process package gate does not need rebasing")
@@ -984,8 +986,9 @@ def patch_main_process_package_gate(
         )
 
     literal_re = re.compile(rf'(?m)^(\s*const-string\s+[vp]\d+,\s*)"{old_literal}"(\s*)$')
+    expected_process = old_package if preserve_original else new_package
     updated_body, replacement_count = literal_re.subn(
-        lambda found: found.group(1) + '"' + new_package + '"' + found.group(2),
+        lambda found: found.group(1) + '"' + expected_process + '"' + found.group(2),
         body,
     )
     if replacement_count != 1:
@@ -994,13 +997,18 @@ def patch_main_process_package_gate(
         )
 
     updated = text[: match.start(2)] + updated_body + text[match.end(2) :]
-    path.write_text(updated, encoding="utf-8", newline="\n")
-    return {
+    if not preserve_original:
+        path.write_text(updated, encoding="utf-8", newline="\n")
+    audit = {
         "class": "ddc.a",
         "method": "invoke()Ljava/lang/Object;",
         "sourceProcessName": old_package,
         "cloneProcessName": new_package,
     }
+    if preserve_original:
+        audit.update({"strategy": "preserve-source-process", "effectiveMainProcessName": old_package,
+                      "preservedOriginalPredicate": True})
+    return audit
 
 
 def dex_entry_names(apk: Path) -> set[str]:
@@ -1129,8 +1137,12 @@ def make_minimal_candidate(
     changed_entries: set[str],
     candidate: Path,
     added_entries: dict[str, Path] | None = None,
+    replacement_entries: dict[str, bytes] | None = None,
 ) -> dict[str, Any]:
     added_entries = added_entries or {}
+    replacement_entries = replacement_entries or {}
+    if not set(replacement_entries) <= changed_entries:
+        raise BuildError("Replacement payload entries must be explicitly declared changed")
     with zipfile.ZipFile(base_apk, "r") as base, zipfile.ZipFile(rebuilt_apk, "r") as rebuilt:
         base_names = [info.filename for info in base.infolist()]
         if len(base_names) != len(set(base_names)):
@@ -1140,7 +1152,7 @@ def make_minimal_candidate(
         if collisions:
             raise BuildError(f"Added payload entries already exist in the baseline APK: {collisions}")
         rebuilt_names = set(rebuilt.namelist())
-        missing = changed_entries - rebuilt_names
+        missing = changed_entries - rebuilt_names - replacement_entries.keys()
         if missing:
             raise BuildError(f"APKEditor build omitted required entries: {sorted(missing)}")
         if "AndroidManifest.xml" not in base_names:
@@ -1153,7 +1165,9 @@ def make_minimal_candidate(
                 if is_signature_metadata(name):
                     removed_signature_entries.append(name)
                     continue
-                if name in changed_entries:
+                if name in replacement_entries:
+                    data = replacement_entries[name]
+                elif name in changed_entries:
                     data = rebuilt.read(name)
                 else:
                     data = base.read(info)
@@ -1306,6 +1320,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--application-id", default=DEFAULT_APPLICATION_ID, help=f"New package ID (default: {DEFAULT_APPLICATION_ID})"
     )
     parser.add_argument("--fold-layout", action="store_true", help="Force the two existing fold-layout gates")
+    parser.add_argument(
+        "--keep-original-main-process", action=argparse.BooleanOptionalAction, default=True,
+        help="Keep the source main-process label and its original local predicates while cloning the installed package",
+    )
     parser.add_argument(
         "--hide-feed-ads", action="store_true",
         help="Hide discovery-feed ad cards after original binding; preserve requests and feed data",
@@ -1484,15 +1502,32 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         old_package, manifest_changes, warnings, permission_clone_audit = transform_manifest(
             manifest_root, application_id
         )
+        if args.keep_original_main_process:
+            application = manifest_root.find("application")
+            if application is None:
+                raise BuildError("Manifest application is missing")
+            existing_process = application.get(ANDROID + "process")
+            if existing_process not in (None, old_package):
+                raise BuildError("Unexpected existing application process label")
+            application.set(ANDROID + "process", old_package)
+            manifest_changes.append({"field": "application.process", "from": existing_process, "to": old_package})
         manifest_tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
+
+        with zipfile.ZipFile(merge_input) as source_zip:
+            renamed_resources, resource_audit = rename_resource_package(
+                source_zip.read("resources.arsc"), old_package, application_id
+            )
+        resource_package_audit = {"enabled": True, "audit": resource_audit}
 
         touched_dex_names: set[str] = set()
         process_gate_path = find_smali_class(decoded_dir, "ddc.a")
         process_gate_audit = patch_main_process_package_gate(
-            process_gate_path, old_package, application_id
+            process_gate_path, old_package, application_id,
+            preserve_original=args.keep_original_main_process,
         )
         process_gate_dex = dex_name_for_smali(decoded_dir, process_gate_path)
-        touched_dex_names.add(process_gate_dex)
+        if not args.keep_original_main_process:
+            touched_dex_names.add(process_gate_dex)
 
         fold_touched_dex_names: set[str] = set()
         if args.fold_layout:
@@ -1622,7 +1657,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             baseline_names = set(baseline.namelist())
             if "AndroidManifest.xml" not in baseline_names:
                 raise BuildError("Baseline APK has no AndroidManifest.xml")
-            changed_entries = {"AndroidManifest.xml"}
+            changed_entries = {"AndroidManifest.xml", "resources.arsc"}
             missing_dex = touched_dex_names - baseline_names
             if missing_dex:
                 raise BuildError(f"Touched DEX not present in merged input: {sorted(missing_dex)}")
@@ -1640,6 +1675,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             changed_entries,
             candidate,
             added_entries=signature_compat_added_entries,
+            replacement_entries={"resources.arsc": renamed_resources},
         )
         # The comparison baseline for XAPK runs is the APKEditor-merged file. Its
         # resource table and split layout already differ from the original splits.
@@ -1724,11 +1760,17 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             "mainProcessCompatibility": {
                 **process_gate_audit,
                 "touchedDexEntry": process_gate_dex,
+                "strategy": "preserve-source-process" if args.keep_original_main_process else "rename-predicate",
+                "effectiveMainProcessName": old_package if args.keep_original_main_process else application_id,
+                "preservedOriginalPredicate": bool(args.keep_original_main_process),
                 "reason": (
-                    "The app's main-process predicate compares the process name to its source package. "
-                    "The clone's default process name follows the new applicationId."
+                    "Preserve the source main-process label for all app-local main-process gates; "
+                    "the installed package and private component process prefixes remain cloned."
+                    if args.keep_original_main_process else
+                    "Rebase the selected local process predicate to the clone's default process name."
                 ),
             },
+            "resourcePackageCompatibility": resource_package_audit,
             "signatureCompatibility": {
                 **signature_compat_audit,
                 **(

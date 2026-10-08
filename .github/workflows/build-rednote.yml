@@ -21,8 +21,10 @@ on:
       - "tools/verify_rednote_signature_compat.py"
       - "tools/verify_rednote_process_gate.py"
       - "tools/verify_fold_dex.py"
+      - "tools/build_rednote_package_fix.py"
+      - "rednote_package_compat.py"
+      - "rednote_resource_package.py"
       - ".github/workflows/build-rednote.yml"
-      - ".github/workflows/rednote-rollback-check.yml"
   workflow_dispatch:
     inputs:
       publish:
@@ -34,17 +36,12 @@ on:
         description: Release tag to create or use
         type: string
         required: true
-        default: rednote-v9.48.1-2
+        default: rednote-v9.48.1-4
       hide_feed_ads:
         description: Hide discovery-feed ad cards
         type: boolean
         required: true
         default: true
-      source_test_run:
-        description: Import an existing SMS-screen test run ID; leave empty for a fresh build
-        type: string
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -58,7 +55,6 @@ jobs:
       contents: read
     env:
       HIDE_FEED_ADS: ${{ github.event_name != 'workflow_dispatch' || inputs.hide_feed_ads }}
-      SOURCE_TEST_RUN: ${{ inputs.source_test_run }}
     outputs:
       hide_feed_ads: ${{ steps.build_variant.outputs.hide_feed_ads }}
     steps:
@@ -119,149 +115,7 @@ jobs:
       - name: Run Rednote unit tests
         run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch
 
-      - name: Validate imported phone-test run and limited result
-        if: ${{ inputs.source_test_run != '' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || "$GITHUB_REF" != "refs/heads/main" || "$HIDE_FEED_ADS" != "true" ]]; then
-            echo "source_test_run is only accepted for an ads-enabled manual build on main." >&2
-            exit 1
-          fi
-          if [[ ! "$SOURCE_TEST_RUN" =~ ^[0-9]+$ ]]; then
-            echo "source_test_run must contain only decimal digits." >&2
-            exit 1
-          fi
-
-          mkdir -p imported-source
-          gh api "repos/$GH_REPO/actions/runs/$SOURCE_TEST_RUN" > imported-source/run.json
-          gh api "repos/$GH_REPO/contents/runtime-control/rednote-${SOURCE_TEST_RUN}.result.json?ref=codex%2Frednote-kvm-test" \
-            --jq '.content' | tr -d '\n' | base64 --decode > "imported-source/rednote-${SOURCE_TEST_RUN}.result.json"
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          run_id = os.environ["SOURCE_TEST_RUN"]
-          run = json.loads(Path("imported-source/run.json").read_text())
-          if run.get("id") != int(run_id):
-              raise SystemExit("Imported Actions run ID does not match the requested run")
-          if run.get("name") != "REDnote native ARM64 Waydroid phone test":
-              raise SystemExit("Imported run is not the approved REDnote phone-test workflow")
-          if run.get("head_branch") != "codex/rednote-kvm-test":
-              raise SystemExit("Imported phone-test run came from an unexpected branch")
-          if run.get("head_repository", {}).get("full_name") != os.environ["GH_REPO"] or run.get("head_sha") != "6d80052227eb46d793dac9c091e318ee831cc3fd":
-              raise SystemExit("Imported phone-test run repository or commit differs from the tested source")
-          if run.get("status") != "completed" or run.get("conclusion") != "success":
-              raise SystemExit("Imported phone-test run did not complete successfully")
-
-          result_path = Path(f"imported-source/rednote-{run_id}.result.json")
-          result = json.loads(result_path.read_text())
-          if result.get("test_variant") != "fold-compat-hide-ads":
-              raise SystemExit("Phone-test result variant is not fold-compat-hide-ads")
-          if result.get("result_category") != "otp_screen":
-              raise SystemExit("Phone-test result did not reach the SMS code screen")
-          if result.get("stage") != "complete" or result.get("timeout") is not False:
-              raise SystemExit("Phone-test result did not complete cleanly")
-          if result.get("otp_input_visible") is not True:
-              raise SystemExit("Phone-test result did not confirm the OTP screen")
-          steps = result.get("steps", {})
-          for step in ("launched", "phone_login_opened", "country_confirmed", "phone_entered", "get_code_clicked"):
-              if steps.get(step) is not True:
-                  raise SystemExit(f"Phone-test result is missing successful step: {step}")
-          print(f"Validated limited SMS-screen evidence from run {run_id}; no OTP value is read or entered.")
-          PY
-
-      - name: Download imported SMS-screen test artifact
-        if: ${{ inputs.source_test_run != '' }}
-        uses: actions/download-artifact@v6
-        with:
-          name: rednote-fold-hide-ads
-          path: imported-source/artifact
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.source_test_run }}
-          github-token: ${{ github.token }}
-
-      - name: Import tested APK, report, and ad smoke evidence
-        if: ${{ inputs.source_test_run != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          SOURCE_DIR="imported-source/artifact"
-          APK_SOURCE="$SOURCE_DIR/rednote-fold-hide-ads.apk"
-          REPORT_SOURCE="$SOURCE_DIR/build-report.json"
-          SMOKE_SOURCE="$SOURCE_DIR/feed-ad-display-smoke.json"
-          test -f "$APK_SOURCE"
-          test -f "$REPORT_SOURCE"
-          test -f "$SMOKE_SOURCE"
-          test -f "$SOURCE_DIR/SHA256SUMS"
-          (
-            cd "$SOURCE_DIR"
-            sha256sum --check SHA256SUMS
-          )
-
-          APK_SHA256="$(sha256sum "$APK_SOURCE" | cut -d ' ' -f 1)"
-          if [[ "$APK_SHA256" != "337dd853737eccfad2ead9e09e5f344ede6d6b028f10d01bb9d9ab188888a84f" ]]; then
-            echo "Imported APK bytes do not match the SMS-tested APK." >&2
-            exit 1
-          fi
-          python - "$SMOKE_SOURCE" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          smoke = json.loads(Path(sys.argv[1]).read_text())
-          checks = smoke.get("checks", {})
-          required = (
-              "ad_hidden",
-              "repeated_hide_stable",
-              "ordinary_restored",
-              "ordinary_gone_unchanged",
-              "null_layout_params_safe",
-              "new_bind_height_preserved",
-              "wrap_content_restored",
-              "null_view_safe",
-          )
-          failed = [name for name in required if checks.get(name) is not True]
-          if failed:
-              raise SystemExit("Ad display smoke evidence failed checks: " + ", ".join(failed))
-          print(f"Validated all {len(required)} ad display smoke checks.")
-          PY
-
-          mkdir -p output_apks
-          cp "$APK_SOURCE" output_apks/rednote-fold-custom.apk
-          cp "$REPORT_SOURCE" output_apks/rednote-fold-build-report.json
-          cp "$SMOKE_SOURCE" output_apks/feed-ad-display-smoke.json
-          cp "imported-source/rednote-${SOURCE_TEST_RUN}.result.json" "output_apks/rednote-${SOURCE_TEST_RUN}.result.json"
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          report_path = Path("output_apks/rednote-fold-build-report.json")
-          report = json.loads(report_path.read_text())
-          if report.get("phoneNumberIncluded") is not False:
-              raise SystemExit("Imported report does not confirm that phone numbers are excluded")
-          report["output"]["file"] = "rednote-fold-custom.apk"
-          report["sourceTestRun"] = {
-              "runId": os.environ["SOURCE_TEST_RUN"],
-              "workflow": "REDnote native ARM64 Waydroid phone test",
-              "headBranch": "codex/rednote-kvm-test",
-              "variant": "fold-compat-hide-ads",
-              "limitedResultFile": f"rednote-{os.environ['SOURCE_TEST_RUN']}.result.json",
-              "adDisplaySmokeFile": "feed-ad-display-smoke.json",
-              "testedApkSha256": "337dd853737eccfad2ead9e09e5f344ede6d6b028f10d01bb9d9ab188888a84f",
-              "otpValueIncluded": False,
-              "phoneNumberIncluded": False,
-          }
-          report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-          PY
-
       - name: Download and verify pinned source for a fresh build
-        if: ${{ inputs.source_test_run == '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -278,7 +132,6 @@ jobs:
           echo "a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67  $APKEDITOR" | sha256sum --check --status
 
       - name: Build fresh signed REDnote clone
-        if: ${{ inputs.source_test_run == '' }}
         env:
           KEYSTORE_PASSWORD: "123456789"
           KEY_PASSWORD: "123456789"
@@ -294,6 +147,7 @@ jobs:
             --application-id com.kirikira.rednote.fold
             --fold-layout
             --signature-compat
+            --keep-original-main-process
             --decode-dex classes17.dex
             --decode-dex classes4.dex
             --output output_apks/rednote-fold-custom.apk
@@ -326,24 +180,12 @@ jobs:
 
           (
             cd output_apks
-            assets=(rednote-fold-custom.apk rednote-fold-build-report.json)
-            if [[ -f feed-ad-display-smoke.json ]]; then
-              assets+=(feed-ad-display-smoke.json)
-            fi
-            if [[ -n "$SOURCE_TEST_RUN" ]]; then
-              assets+=("rednote-${SOURCE_TEST_RUN}.result.json")
-            fi
-            sha256sum "${assets[@]}" > SHA256SUMS
+            sha256sum rednote-fold-custom.apk rednote-fold-build-report.json > SHA256SUMS
           )
           mkdir -p release-assets
           cp output_apks/rednote-fold-custom.apk output_apks/rednote-fold-build-report.json output_apks/SHA256SUMS release-assets/
-          for optional_asset in output_apks/feed-ad-display-smoke.json output_apks/rednote-"${SOURCE_TEST_RUN}".result.json; do
-            if [[ -f "$optional_asset" ]]; then
-              cp "$optional_asset" release-assets/
-            fi
-          done
 
-      - name: Upload candidate artifact for rollback check and release
+      - name: Upload candidate artifact for release
         uses: actions/upload-artifact@v6
         with:
           name: rednote-fold-custom
@@ -351,22 +193,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  rollback_check:
-    needs: build
-    if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/rednote-v')) ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish && inputs.hide_feed_ads)
-    permissions:
-      actions: read
-      contents: read
-    uses: ./.github/workflows/rednote-rollback-check.yml
-    with:
-      test_run_id: ${{ github.run_id }}
-
   release:
-    needs:
-      - build
-      - rollback_check
+    needs: build
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/rednote-v')) ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish && inputs.hide_feed_ads)
@@ -381,19 +209,11 @@ jobs:
           name: rednote-fold-custom
           path: release-assets
 
-      - name: Download successful rollback evidence
-        uses: actions/download-artifact@v6
-        with:
-          name: rednote-rollback-check
-          path: release-assets
-
       - name: Create release without replacing an existing release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           DISPATCH_TAG: ${{ inputs.tag }}
-          HIDE_FEED_ADS: ${{ needs.build.outputs.hide_feed_ads }}
-          SOURCE_TEST_RUN: ${{ inputs.source_test_run }}
         shell: bash
         run: |
           set -euo pipefail
@@ -414,61 +234,28 @@ jobs:
             cd release-assets
             sha256sum --check SHA256SUMS
           )
-          python3 - <<'PY'
-          import hashlib, json
-          from pathlib import Path
-          assets = Path('release-assets')
-          report = json.loads((assets / 'rollback-check.json').read_text())
-          expected_sequence = ['baseline-initial', 'candidate-first-overlay', 'baseline-rollback', 'candidate-second-overlay']
-          if report.get('status') != 'passed' or report.get('installSequence') != expected_sequence or report.get('markerChecks') != expected_sequence:
-              raise SystemExit('Rollback evidence did not confirm every overlay and data check')
-          candidate_sha = hashlib.sha256((assets / 'rednote-fold-custom.apk').read_bytes()).hexdigest()
-          if report.get('candidateApkSha256') != candidate_sha:
-              raise SystemExit('Rollback evidence does not match the release APK')
-          PY
-          (
-            cd release-assets
-            sha256sum rollback-check.json >> SHA256SUMS
-          )
-
           cat > release-notes.md <<'NOTES'
-          REDnote fold build with discovery-feed ad cards hidden.
+          REDnote fold build with discovery-feed ad cards hidden, the source main-process name preserved, and the compiled resource-table package name set to `com.kirikira.rednote.fold`.
 
-          Package `com.kirikira.rednote.fold` installs alongside the domestic app package `com.xingin.xhs`.
+          The application keeps the source process name `com.xingin.xhs` and the original main-process predicate. Its resource table uses the clone package name `com.kirikira.rednote.fold`; this lets the clone keep its distinct Android package identity while preserving the source process behavior.
 
-          Android `versionCode` 9481803 and `versionName` 9.48.1 are unchanged. This patch revision is identified by the Release tag, and the stable package name and signing certificate allow an in-place return to `rednote-v9.48.1-1` while keeping app data.
+          The feed ad patch sets ad views to `GONE` and their item height to zero, then restores the source view state before rebinding. No feed request or feed data is changed. Remaining feed spacing has not been rechecked for this build and is not claimed here.
 
-          Roll back by installing [the previous APK](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-1/rednote-fold-custom.apk) over this version. A clean ARM64 Android test verified baseline → ad build → baseline → ad build, with the same app UID and an app-owned data marker preserved after every overlay. The limited result is attached as `rollback-check.json`.
+          Android `versionCode` 9481803 and `versionName` 9.48.1 remain unchanged; Release tags identify patch revisions. The package name, version metadata, and signing certificate remain compatible with [rednote-v9.48.1-3](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-3/rednote-fold-custom.apk) for in-place rollback while retaining app data.
+
+          No SMS or OTP flow was run for this build. No user phone number or verification code is included in the release assets.
 
           Signed with `ks_pkcs12.keystore`, alias `jhc`; APK signer SHA-256 is `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4`.
           NOTES
-          if [[ -n "$SOURCE_TEST_RUN" ]]; then
-            cat >> release-notes.md <<NOTES
-
-          Attached ad-display smoke evidence covers feed-card hiding, ordinary-card restoration, repeated binds, and safe view/layout handling. Feed requests and feed data are unchanged.
-          Phone-flow evidence was imported from successful Actions run ${SOURCE_TEST_RUN}: the app reached the SMS code screen after one SMS request. No OTP was entered, no additional SMS/OTP test was run for this release, and no user phone number or verification code is included in the release assets.
-          NOTES
-          else
-            cat >> release-notes.md <<'NOTES'
-
-          The ad patch was checked in the build, but no runtime ad-display smoke artifact is attached.
-          No additional SMS or OTP test was run for this release. No user phone number or verification code is included in the release assets.
-          NOTES
-          fi
 
           assets=(
             release-assets/rednote-fold-custom.apk
             release-assets/SHA256SUMS
             release-assets/rednote-fold-build-report.json
-            release-assets/rollback-check.json
           )
-          for optional_asset in release-assets/feed-ad-display-smoke.json release-assets/rednote-"${SOURCE_TEST_RUN}".result.json; do
-            if [[ -f "$optional_asset" ]]; then
-              assets+=("$optional_asset")
-            fi
-          done
           gh release create "$tag" "${assets[@]}" \
             --title "$tag" \
             --notes-file release-notes.md \
+            --prerelease \
             --latest=false \
             --target "$GITHUB_SHA"

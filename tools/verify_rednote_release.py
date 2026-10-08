@@ -10,14 +10,19 @@ import os
 import re
 import subprocess
 
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from rednote_resource_package import package_records
+from rednote_ad_patch import verify_compiled_feed_patch
+from tools.build_rednote_package_fix import verify_manifest_process
 from verify_fold_dex import verify_fold_gates
 from verify_rednote_process_gate import verify_process_gate
 from verify_rednote_signature_compat import verify_signature_compat
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from rednote_ad_patch import verify_compiled_feed_patch
-
 PACKAGE = "com.kirikira.rednote.fold"
+SOURCE_PACKAGE = "com.xingin.xhs"
+SOURCE_PROCESS = "com.xingin.xhs"
 SOURCE_SHA = "bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0"
 SOURCE_CERT = "dbf2ddfe68dc6c3d7bdbd1c70aae13993f50fa99b51d6f0c668a284ee9e6fdcd"
 OUTPUT_CERT = "637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4"
@@ -56,9 +61,37 @@ def verify(apk, report_path, expect_ads=None):
             "Split merge did not preserve source payloads")
     require(report["payloadHashAudit"]["allOtherPayloadHashesMatch"] is True,
             "Unexpected payload changes")
+    process_compat = report.get("mainProcessCompatibility")
+    require(isinstance(process_compat, dict), "Missing main-process compatibility report")
+    require(process_compat.get("strategy") == "preserve-source-process",
+            "Release must preserve the source main-process behavior")
+    require(process_compat.get("effectiveMainProcessName") == SOURCE_PROCESS,
+            "Unexpected effective application process name")
+    require(process_compat.get("preservedOriginalPredicate") is True,
+            "Original source main-process predicate was not preserved")
+    require(process_compat.get("touchedDexEntry") == "classes17.dex",
+            "Unexpected source main-process predicate DEX entry")
+
+    resource_compat = report.get("resourcePackageCompatibility")
+    require(isinstance(resource_compat, dict) and resource_compat.get("enabled") is True,
+            "Resource-table package compatibility is disabled")
+    resource_audit = resource_compat.get("audit")
+    require(isinstance(resource_audit, dict), "Missing resource-table package audit")
+    require(resource_audit.get("old_package") == SOURCE_PACKAGE,
+            "Resource-table audit has an unexpected source package")
+    require(resource_audit.get("new_package") == PACKAGE,
+            "Resource-table audit has an unexpected clone package")
+    require(resource_audit.get("package_id") == 0x7F,
+            "Resource-table audit targets an unexpected package ID")
+    require(resource_audit.get("numeric_resource_ids_unchanged") is True,
+            "Resource-table audit does not preserve numeric resource IDs")
+    require(resource_audit.get("all_bytes_outside_name_field_unchanged") is True,
+            "Resource-table audit reports changes outside the package-name field")
+
     expected_entries = {
         "AndroidManifest.xml", "classes17.dex", "classes4.dex", compat["helperDexEntry"]
     }
+    expected_entries.add("resources.arsc")
     ads = report.get("feedAdDisplay", {"enabled": False})
     require(type(ads.get("enabled")) is bool, "Invalid ad patch flag")
     if expect_ads is not None:
@@ -70,6 +103,27 @@ def verify(apk, report_path, expect_ads=None):
         ads["compiledVerification"] = verify_compiled_feed_patch(apk)
     require(set(report["modifiedEntries"]) == expected_entries, "Unexpected modified entries")
     with zipfile.ZipFile(apk) as archive:
+        resource_table = archive.read("resources.arsc")
+        resource_packages = package_records(resource_table)
+        app_packages = [record for record in resource_packages if record.get("id") == 0x7F]
+        require(len(app_packages) == 1, "Expected one application package in resources.arsc")
+        resource_package = app_packages[0]
+        require(resource_package.get("name") == PACKAGE,
+                "Compiled resources.arsc does not use the clone package name")
+        require(resource_audit.get("package_count") == len(resource_packages),
+                "Resource-table audit package count disagrees with resources.arsc")
+        require(resource_audit.get("resources_arsc_size_after") == len(resource_table),
+                "Resource-table audit size disagrees with resources.arsc")
+        require(resource_audit.get("sha256_after") == hashlib.sha256(resource_table).hexdigest(),
+                "Resource-table audit hash disagrees with resources.arsc")
+        require(resource_audit.get("numeric_resource_id_count") == len(resource_package["numeric_resource_ids"]),
+                "Resource-table audit resource-ID count disagrees with resources.arsc")
+        require(resource_audit.get("numeric_resource_id_sha256") == resource_package["numeric_resource_id_sha256"],
+                "Resource-table audit resource-ID digest disagrees with resources.arsc")
+        require(resource_audit.get("type_spec_id_count") == resource_package["type_spec_id_count"],
+                "Resource-table audit type-spec count disagrees with resources.arsc")
+        require(resource_audit.get("configured_entry_id_count") == resource_package["configured_entry_id_count"],
+                "Resource-table audit configured-entry count disagrees with resources.arsc")
         require({"META-INF/XINGIN.SF", "META-INF/XINGIN.RSA"} <= set(archive.namelist()),
                 "XINGIN V1 signature entries are missing")
         require(hashlib.sha256(archive.read(compat["helperDexEntry"])).hexdigest() == compat["helperDexSha256"],
@@ -78,7 +132,18 @@ def verify(apk, report_path, expect_ads=None):
             require(hashlib.sha256(archive.read(ads["helperDexEntry"])).hexdigest() == ads["helperDexSha256"],
                     "Ad helper DEX hash mismatch")
     report["compiledSignatureCompatibilityVerification"] = verify_signature_compat(apk, PACKAGE, SOURCE_CERT)
-    report["compiledMainProcessGateVerification"] = verify_process_gate(apk, PACKAGE)
+    report["compiledMainProcessGateVerification"] = verify_process_gate(apk, SOURCE_PROCESS)
+    manifest_process = verify_manifest_process(apk, os.environ.get("AAPT2", "aapt2"))
+    require(manifest_process.get("applicationProcess") == SOURCE_PROCESS,
+            "Compiled application manifest does not preserve the source process name")
+    report["compiledManifestProcessVerification"] = manifest_process
+    report["compiledResourcePackageCompatibilityVerification"] = {
+        "verified": True,
+        "packageId": resource_package["id"],
+        "packageName": resource_package["name"],
+        "numericResourceIdCount": len(resource_package["numeric_resource_ids"]),
+        "numericResourceIdSha256": resource_package["numeric_resource_id_sha256"],
+    }
     report["compiledFoldGateVerification"] = verify_fold_gates(apk)
     report["compiledV1EntryNameVerification"] = {"present": True}
     report["rollbackCompatibility"] = {"package": PACKAGE, "versionCode": 9481803,

@@ -17,7 +17,24 @@ The patch inserts two display-only hooks around the original superclass bind:
 3. Inspect the bound item: `NoteItemBean`, `MediaBean`, or `NativeMediaBean` must have `isAd=true`; a dedicated `AdsInfo` item also qualifies. Other item types retain their existing display state.
 4. For an ad, set the root to `View.GONE` and set its layout height to zero. Save its original state in a weak map so recycled holders can bind ordinary cards with their correct new dimensions.
 
-The patch retains feed items, response parsing, requests, and the original bind. It does not forge advertisement impressions. Actual visibility-based impression reporting can naturally change when a card is hidden. This experiment covers this discovery/home-feed adapter; search, detail pages, splash screens, and other ad surfaces are outside its scope. Item decorations may still leave some spacing between collapsed cards.
+The patch retains feed items, response parsing, requests, and the original bind. It does not forge advertisement impressions. Actual visibility-based impression reporting can naturally change when a card is hidden. This experiment covers this discovery/home-feed adapter; search, detail pages, splash screens, and other ad surfaces are outside its scope.
+
+## Layout after hiding
+
+The source feed uses `ExploreStaggeredGridLayoutManager` and `ExploreDoubleRowStaggeredDiverDecoration`
+(configured in `qkc.m0`). The layout manager measures an item's zero content height and places
+later cards according to the remaining span heights. Hiding therefore collapses the original
+card-sized area and later cards move up; it does not reserve the original card rectangle.
+
+The adapter item remains in the data list. RecyclerView still measures its item-decoration insets
+and margins even when the root is `GONE`, so a small grid separator can remain. Phone layouts use
+a 5 dp divider; the usual ad root decoration has 5 dp above and 2 dp below, while pad layouts use
+an 8 dp divider. The exact residual offset depends on position and root type. The inspected ad
+binders do not mark the roots full-span or set extra root margins.
+
+These layout details follow the original APK's layout-manager, decoration and binder code.
+The prior actual-Android helper checks below cover visibility, height and holder restoration;
+they did not measure a live server-delivered advertisement in the full feed.
 
 ## Validation
 

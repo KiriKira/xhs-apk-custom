@@ -283,6 +283,22 @@ class MainProcessPackageGateTests(unittest.TestCase):
         with self.assertRaises(BuildError):
             patch_main_process_package_gate(self.smali_path, OLD_PACKAGE, NEW_PACKAGE)
 
+    def test_preserved_main_process_does_not_rewrite_dex_source(self):
+        original = self.smali_path.read_bytes()
+        audit = patch_main_process_package_gate(
+            self.smali_path, OLD_PACKAGE, NEW_PACKAGE, preserve_original=True
+        )
+        self.assertEqual(self.smali_path.read_bytes(), original)
+        self.assertEqual(audit['effectiveMainProcessName'], OLD_PACKAGE)
+        self.assertTrue(audit['preservedOriginalPredicate'])
+
+    def test_preserved_mode_rejects_an_already_rebased_input(self):
+        patch_main_process_package_gate(self.smali_path, OLD_PACKAGE, NEW_PACKAGE)
+        with self.assertRaises(BuildError):
+            patch_main_process_package_gate(
+                self.smali_path, OLD_PACKAGE, NEW_PACKAGE, preserve_original=True
+            )
+
 
 class SelectiveDexRebuildTests(unittest.TestCase):
     def setUp(self):

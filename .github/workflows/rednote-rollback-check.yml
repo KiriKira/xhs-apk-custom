@@ -41,9 +41,9 @@ jobs:
           set -euo pipefail
           test -s release-assets/rednote-fold-custom.apk
           curl --fail --location --retry 3 --connect-timeout 20 --max-time 240 \
-            'https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-1/rednote-fold-custom.apk' \
+            'https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-3/rednote-fold-custom.apk' \
             --output release-assets/rednote-fold-custom-baseline.apk
-          echo '776a835279b476bd0314dc77488fc43f03244869f2fed48aa8ee0e4d9e930773  release-assets/rednote-fold-custom-baseline.apk' | sha256sum --check
+          echo '6645d47a0e7769caf0f586eb6dbed1fd4a55006769dfd5614ee85be979deccdb  release-assets/rednote-fold-custom-baseline.apk' | sha256sum --check
           baseline_sha256="$(sha256sum release-assets/rednote-fold-custom-baseline.apk | awk '{print $1}')"
           candidate_sha256="$(sha256sum release-assets/rednote-fold-custom.apk | awk '{print $1}')"
           {
