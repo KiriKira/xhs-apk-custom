@@ -1,0 +1,91 @@
+name: Analyze XHS WeChat Share Xrefs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/analyze-xhs-wechat-xrefs.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download base
+        run: |
+          set -euo pipefail
+          URL='https://dl.coolapk.com/down?pn=com.xingin.xhs&id=15276&v=MTUyNzY&type=apk&from=market-v13&vc=9334801&nd=0&h=3c30e27f'
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' "$URL" -o base.apk
+          sha256sum base.apk
+      - name: Install androguard
+        run: pip install androguard
+      - name: Scan xrefs
+        shell: bash
+        run: |
+          python - <<'PY'
+          from androguard.misc import AnalyzeAPK
+          from pathlib import Path
+          a, ds, dx = AnalyzeAPK("base.apk")
+          needles_cls = (
+            "Lcom/tencent/mm/opensdk/",
+            "Lcom/tencent/mm/sdk/",
+          )
+          needles_name = {"sendReq","createWXAPI","registerApp","send","share"}
+          out=[]
+          seen=set()
+          # Dump classes/methods in XHS that reference WeChat SDK classes or key methods.
+          for ma in dx.get_methods():
+              m=ma.get_method()
+              cname=m.get_class_name()
+              if cname.startswith("Lcom/tencent/mm/"):
+                  continue
+              hits=[]
+              try:
+                  for _, callee, off in ma.get_xref_to():
+                      cm=callee.get_method()
+                      sig=f"{cm.get_class_name()}->{cm.get_name()}{cm.get_descriptor()}"
+                      if any(n in cm.get_class_name() for n in needles_cls) or cm.get_name() in needles_name:
+                          hits.append((off,sig))
+              except Exception:
+                  pass
+              # strings on method
+              try:
+                  for _, s, off in ma.get_xref_to():
+                      pass
+              except Exception:
+                  pass
+              if hits:
+                  key=(cname,m.get_name(),m.get_descriptor())
+                  if key in seen: continue
+                  seen.add(key)
+                  out.append("\n===== %s->%s%s =====\n"%(key))
+                  out.append("XREFS:\n")
+                  for off,sig in hits:
+                      out.append(f"  @{off:#x} {sig}\n")
+                  code=m.get_code()
+                  if code:
+                      out.append("DISASM:\n")
+                      for ins in code.get_bc().get_instructions():
+                          out.append(f"  {ins.get_name():24s} {ins.get_output()}\n")
+          # Also dump WeChat SDK app IDs / package-ish constants and all strings containing wx/wechat.
+          out.append("\n===== STRINGS =====\n")
+          vals=set()
+          for s in dx.get_strings():
+              v=s.get_value()
+              lv=v.lower()
+              if "wx" in lv or "wechat" in lv or "weixin" in lv or "com.tencent.mm" in lv:
+                  if len(v) < 300:
+                      vals.add(v)
+          for v in sorted(vals):
+              out.append(v+"\n")
+          Path("xhs-wechat-xrefs.txt").write_text("".join(out), errors="ignore")
+          PY
+      - uses: actions/upload-artifact@v6
+        with:
+          name: xhs-wechat-xrefs
+          path: xhs-wechat-xrefs.txt
+          retention-days: 2
