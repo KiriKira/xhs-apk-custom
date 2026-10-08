@@ -32,7 +32,8 @@ def verify_manifest_process(apk, aapt2):
             continue
         if in_application and re.match(r'\s*E:', line):
             in_application = False
-        if in_application and 'A: android:process(' in line:
+        if in_application and re.search(
+                r'A: (?:android:|http://schemas\.android\.com/apk/res/android:)process\(', line):
             found.append(line)
     if len(found) != 1 or f'"{PROCESS}"' not in found[0]:
         raise base.BuildError('Compiled application process name does not match the experiment')
