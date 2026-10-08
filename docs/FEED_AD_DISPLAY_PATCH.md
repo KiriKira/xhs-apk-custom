@@ -28,8 +28,9 @@ card-sized area and later cards move up; it does not reserve the original card r
 
 The adapter item remains in the data list. RecyclerView still measures its item-decoration insets
 and margins even when the root is `GONE`, so a small grid separator can remain. Phone layouts use
-a 5 dp divider; the usual ad root decoration has 5 dp above and 2 dp below, while pad layouts use
-an 8 dp divider. The exact residual offset depends on position and root type. The inspected ad
+a 5 dp divider; the usual ad root decoration has integer half-divider offsets above and below
+(about 4 dp total), with the bottom offset increasing near the list end (about 7 dp total).
+Pad layouts use an 8 dp divider. The exact residual offset depends on position and root type. The inspected ad
 binders do not mark the roots full-span or set extra root margins.
 
 These layout details follow the original APK's layout-manager, decoration and binder code.
