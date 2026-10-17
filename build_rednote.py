@@ -32,6 +32,7 @@ from rednote_signature_compat import (
 )
 from rednote_ad_patch import ADAPTER, patch_feed_bind, verify_compiled_feed_patch
 from rednote_ad_display_helper import build_ad_display_dex
+from rednote_splash_ad_patch import patch_splash_ad_dispatch, verify_compiled_splash_patch
 from rednote_resource_package import rename_resource_package
 from rednote_launcher_icon import prepare_launcher_icons
 from rednote_wechat_share_patch import patch_send_share_identity
@@ -1331,6 +1332,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Hide discovery-feed ad cards after original binding; preserve requests and feed data",
     )
     parser.add_argument(
+        "--skip-splash-ads", action="store_true",
+        help="Skip the cold-start splash ad through the original no-ad path; preserve requests",
+    )
+    parser.add_argument(
         "--launcher-icon", type=Path,
         help="Replace the pinned launcher PNGs using this artwork and its sibling -foreground.png",
     )
@@ -1652,6 +1657,21 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             except Exception as exc:
                 raise BuildError(f"Could not prepare feed-ad display patch: {exc}") from exc
 
+        splash_ad_audit: dict[str, Any] = {"enabled": False}
+        if args.skip_splash_ads:
+            try:
+                splash_smali = find_smali_class(decoded_dir, "uy.f")
+                splash_ad_audit = {"enabled": True, **patch_splash_ad_dispatch(splash_smali)}
+                splash_touched_dex = dex_name_for_smali(decoded_dir, splash_smali)
+                touched_dex_names.add(splash_touched_dex)
+                splash_ad_audit["touchedDexEntry"] = splash_touched_dex
+                warnings.append(
+                    "--skip-splash-ads routes the cold-start splash-ad dispatch to its original "
+                    "no-ad branch; the ad request and payload download are unchanged."
+                )
+            except Exception as exc:
+                raise BuildError(f"Could not prepare splash-ad display patch: {exc}") from exc
+
         if args.decode_dex:
             missing_touched_dex = touched_dex_names - set(args.decode_dex)
             if missing_touched_dex:
@@ -1730,6 +1750,8 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         )
         if args.hide_feed_ads:
             feed_ad_audit["compiledVerification"] = verify_compiled_feed_patch(output_path)
+        if args.skip_splash_ads:
+            splash_ad_audit["compiledVerification"] = verify_compiled_splash_patch(output_path)
         report = {
             "schemaVersion": 1,
             "sourceDescription": redact_phone_like_text(source_description),
@@ -1783,6 +1805,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 "touchedDexEntries": sorted(fold_touched_dex_names),
             },
             "feedAdDisplay": feed_ad_audit,
+            "splashAdDisplay": splash_ad_audit,
             "launcherIcon": icon_audit,
             "wechatShareIdentity": wechat_share_audit,
             "mainProcessCompatibility": {

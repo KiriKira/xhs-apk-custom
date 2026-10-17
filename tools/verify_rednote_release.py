@@ -17,6 +17,7 @@ from rednote_resource_package import package_records
 from rednote_launcher_icon import verify_launcher_icons
 from rednote_wechat_share_patch import verify_compiled_wechat_share_identity
 from rednote_ad_patch import verify_compiled_feed_patch
+from rednote_splash_ad_patch import verify_compiled_splash_patch
 from tools.build_rednote_package_fix import verify_manifest_process
 from verify_fold_dex import verify_fold_gates
 from verify_rednote_process_gate import verify_process_gate
@@ -35,7 +36,8 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect_wechat_share=None):
+def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect_wechat_share=None,
+           expect_splash_skip=None):
     report = json.loads(report_path.read_text())
     require(report["input"]["sha256"] == SOURCE_SHA, "Unexpected source file")
     require(report["input"]["signerCertificateSha256"] == [SOURCE_CERT], "Unexpected source signer")
@@ -121,6 +123,13 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
         require(ads["helperDexEntry"] != compat["helperDexEntry"], "Helper DEX collision")
         expected_entries.update({"classes19.dex", ads["helperDexEntry"]})
         ads["compiledVerification"] = verify_compiled_feed_patch(apk)
+    splash = report.get("splashAdDisplay", {"enabled": False})
+    require(type(splash.get("enabled")) is bool, "Invalid splash-ad patch flag")
+    if expect_splash_skip is not None:
+        require(splash["enabled"] is expect_splash_skip, "Unexpected splash-ad patch configuration")
+    if splash["enabled"]:
+        require(splash["touchedDexEntry"] == "classes4.dex", "Unexpected splash dispatcher DEX")
+        splash["compiledVerification"] = verify_compiled_splash_patch(apk)
     require(set(report["modifiedEntries"]) == expected_entries, "Unexpected modified entries")
     with zipfile.ZipFile(apk) as archive:
         resource_table = archive.read("resources.arsc")
@@ -180,6 +189,9 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--expect-ads", action="store_true")
     group.add_argument("--expect-no-ads", action="store_true")
+    splash_group = parser.add_mutually_exclusive_group()
+    splash_group.add_argument("--expect-splash-skip", action="store_true")
+    splash_group.add_argument("--expect-no-splash-skip", action="store_true")
     parser.add_argument("--expect-launcher-icon", action="store_true")
     wxgroup = parser.add_mutually_exclusive_group()
     wxgroup.add_argument("--expect-wechat-share-identity", action="store_true")
@@ -187,4 +199,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     expected = True if args.expect_ads else False if args.expect_no_ads else None
     expected_wechat = True if args.expect_wechat_share_identity else False if args.expect_no_wechat_share_identity else None
-    verify(args.apk, args.report, expected, args.expect_launcher_icon, expected_wechat)
+    expected_splash = True if args.expect_splash_skip else False if args.expect_no_splash_skip else None
+    verify(args.apk, args.report, expected, args.expect_launcher_icon, expected_wechat, expected_splash)
