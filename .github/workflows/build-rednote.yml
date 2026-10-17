@@ -299,7 +299,7 @@ jobs:
 
           The application keeps the source process name `com.xingin.xhs` and the original main-process predicate. Its resource table uses the clone package name `com.kirikira.rednote.fold`; this lets the clone keep its distinct Android package identity while preserving the source process behavior.
 
-          The launcher icon uses the 小K书 branding. The feed ad patch hides ad cards and restores a recycled card's source view state before rebinding. It does not change feed requests or data. The splash-ad patch routes the cold-start splash-ad dispatch to the app's original no-ad branch: the home view is created without an ad, while the ad request, payload download and telemetry are unchanged. The package-compatibility fix preserves the original main-process behavior while keeping the installed package at `com.kirikira.rednote.fold`.
+          The launcher icon uses the 小K书 branding. The feed ad patch hides ad cards and restores a recycled card's source view state before rebinding. It does not change feed requests or data. The splash-ad patch routes the cold-start splash-ad dispatch to the app's original no-ad branch: the home view is created without an ad, while the ad request, payload download and telemetry are unchanged. The splash-ad skip is verified at the static and compiled-bytecode level; no live server-delivered splash ad was observed in a device test for this revision. The package-compatibility fix preserves the original main-process behavior while keeping the installed package at `com.kirikira.rednote.fold`.
 
           Android `versionCode` 9481803, `versionName` 9.48.1, package name, and signing certificate remain unchanged. Release tags identify patch revisions.
 
