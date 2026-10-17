@@ -24,7 +24,7 @@ Every other instruction, both result callbacks and the surrounding startup logic
 
 ## Validation
 
-- `test_rednote_splash_ad_patch.py` pins the exact decoded method text (SHA-256 `0acc8df6…`) and verifies that a changed version, a duplicate method, or a second patch fails without writing.
+- `test_rednote_splash_ad_patch.py` pins the exact decoded method text (SHA-256 `00b0227c…`) and verifies that a changed version, a duplicate method, or a second patch fails without writing.
 - The builder inspects the compiled `classes4.dex`: the `qe.o.c()` call is followed by `move-result` and an unconditional `goto`, no conditional branch remains, both `Function1.invoke` callbacks are retained, and the jump target is the original no-ad marker load (`gz.f`).
 - `tools/verify_rednote_release.py` requires `splashAdDisplay.enabled` for the release variant, checks `touchedDexEntry == classes4.dex`, and re-runs the compiled check.
 

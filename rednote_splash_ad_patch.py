@@ -21,7 +21,7 @@ DISPATCH_METHOD = "a"
 DISPATCH_PROTO = (
     "(Lqe/o;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;)V"
 )
-EXPECTED_METHOD_SHA = "0acc8df621799c7f13b4835a1bc80873b0201ddc72c16419b78b5a2f8454e4d4"
+EXPECTED_METHOD_SHA = "00b0227cecdab5073d2806b8d44aa79d7fa6e3d4e17e3e8151987b277d5e72dc"
 AD_BRANCH = "    if-eqz v0, :cond_0\n"
 NO_AD_BRANCH = "    goto :cond_0\n"
 QUERY_CALL = "    invoke-virtual {p1}, Lqe/o;->c()Z\n"

@@ -22,113 +22,114 @@
     .line 1
     invoke-virtual {p1}, Lqe/o;->c()Z
 
-    .line 4
+    .line 2
     move-result v0
 
     .line 5
     const-string v1, "end"
 
-    .line 7
+    .line 6
     const-string v2, "load_end"
 
-    .line 9
+    .line 8
     const-string v3, "post_end"
 
-    .line 11
+    .line 10
     if-eqz v0, :cond_0
 
-    .line 13
+    .line 12
     sget-object p3, Lq50/x2;->a:Lq50/x2;
 
-    .line 15
+    .line 14
     invoke-virtual {p3, v3}, Lq50/x2;->a(Ljava/lang/String;)V
 
-    .line 18
+    .line 16
     invoke-virtual {p3, v2}, Lq50/x2;->a(Ljava/lang/String;)V
 
-    .line 21
+    .line 19
     invoke-virtual {p1}, Lqe/o;->b()Ljava/lang/Object;
 
-    .line 24
+    .line 22
     move-result-object p1
 
     .line 25
     invoke-interface {p2, p1}, Lkotlin/jvm/functions/Function1;->invoke(Ljava/lang/Object;)Ljava/lang/Object;
 
-    .line 28
+    .line 26
     const-string p1, "load splash ad success"
 
-    .line 30
+    .line 29
     invoke-static {p1}, Lc20/a;->a(Ljava/lang/String;)V
 
-    .line 33
+    .line 31
     sget-object p1, Lq50/t2;->a:Lq50/t2;
 
-    .line 35
+    .line 34
     const-string p2, "load_ad_success"
 
-    .line 37
+    .line 36
     invoke-virtual {p1, p2}, Lq50/t2;->a(Ljava/lang/String;)V
 
-    .line 40
+    .line 38
     sget-object p1, Lq50/q2;->a:Lq50/q2;
 
-    .line 42
+    .line 41
     invoke-virtual {p1, v1}, Lq50/q2;->d(Ljava/lang/String;)V
 
-    .line 45
+    .line 43
     goto :goto_0
 
     .line 46
     :cond_0
     sget-object p1, Lgz/f;->a:Lgz/f;
 
-    .line 48
+    .line 47
     invoke-virtual {p1}, Lgz/f;->a()V
 
-    .line 51
+    .line 49
     sget-object p1, Lq50/x2;->a:Lq50/x2;
 
-    .line 53
+    .line 52
     invoke-virtual {p1, v3}, Lq50/x2;->a(Ljava/lang/String;)V
 
-    .line 56
+    .line 54
     invoke-virtual {p1, v2}, Lq50/x2;->a(Ljava/lang/String;)V
 
-    .line 59
+    .line 57
     sget-object p1, Lq50/q2;->a:Lq50/q2;
 
-    .line 61
+    .line 60
     invoke-virtual {p1, v1}, Lq50/q2;->d(Ljava/lang/String;)V
 
-    .line 64
+    .line 62
     const/4 p1, 0x0
 
     .line 65
     invoke-static {p1}, Ljava/lang/Integer;->valueOf(I)Ljava/lang/Integer;
 
-    .line 68
+    .line 66
     move-result-object p1
 
     .line 69
     invoke-interface {p3, p1}, Lkotlin/jvm/functions/Function1;->invoke(Ljava/lang/Object;)Ljava/lang/Object;
 
-    .line 72
+    .line 70
     sget-object p1, Lc20/a;->a:Lc20/a;
 
-    .line 74
+    .line 73
     sget-object p1, Ljuc/a;->AD_LOG:Ljuc/a;
 
-    .line 76
+    .line 75
     const-string p2, "AdLog"
 
-    .line 78
+    .line 77
     const-string p3, "no splash ad"
 
-    .line 80
+    .line 79
     invoke-static {p1, p2, p3}, Ljuc/f;->B(Ljuc/a;Ljava/lang/String;Ljava/lang/String;)V
 
-    .line 83
+    .line 81
     :goto_0
     return-void
+    .line 84
 .end method
