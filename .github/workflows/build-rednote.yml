@@ -315,7 +315,7 @@ jobs:
 
           **WeChat sharing requires the official international REDnote (Google Play edition, package `com.xingin.xhs`) installed alongside 小K书.** The account owner confirmed successful WeChat sharing with this configuration in release `rednote-v9.48.1-6`. Callbacks may return to the official REDnote app. [Install official international REDnote](https://play.google.com/store/apps/details?id=com.xingin.xhs).
 
-          To return to the stable build, overlay-install [rednote-v9.48.1-5](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-5/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
+          To return to the previous stable build, overlay-install [rednote-v9.48.1-6](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-6/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
           NOTES
           fi
 
