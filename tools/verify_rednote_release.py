@@ -18,6 +18,7 @@ from rednote_launcher_icon import verify_launcher_icons
 from rednote_wechat_share_patch import verify_compiled_wechat_share_identity
 from rednote_ad_patch import verify_compiled_feed_patch
 from rednote_splash_ad_patch import verify_compiled_splash_patch
+from rednote_download_unlock_patch import verify_compiled_download_unlock
 from tools.build_rednote_package_fix import verify_manifest_process
 from verify_fold_dex import verify_fold_gates
 from verify_rednote_process_gate import verify_process_gate
@@ -37,7 +38,7 @@ def require(condition, message):
 
 
 def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect_wechat_share=None,
-           expect_splash_skip=None):
+           expect_splash_skip=None, expect_download_unlock=None):
     report = json.loads(report_path.read_text())
     require(report["input"]["sha256"] == SOURCE_SHA, "Unexpected source file")
     require(report["input"]["signerCertificateSha256"] == [SOURCE_CERT], "Unexpected source signer")
@@ -130,6 +131,16 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     if splash["enabled"]:
         require(splash["touchedDexEntry"] == "classes4.dex", "Unexpected splash dispatcher DEX")
         splash["compiledVerification"] = verify_compiled_splash_patch(apk)
+    download_unlock = report.get("authorDisabledDownloadUnlock", {"enabled": False})
+    require(type(download_unlock.get("enabled")) is bool, "Invalid download-unlock patch flag")
+    if expect_download_unlock is not None:
+        require(download_unlock["enabled"] is expect_download_unlock,
+                "Unexpected author-disabled download patch configuration")
+    if download_unlock["enabled"]:
+        require(download_unlock.get("touchedDexEntry") == "classes12.dex",
+                "Unexpected download-unlock DEX")
+        download_unlock["compiledVerification"] = verify_compiled_download_unlock(apk)
+        expected_entries.add("classes12.dex")
     require(set(report["modifiedEntries"]) == expected_entries, "Unexpected modified entries")
     with zipfile.ZipFile(apk) as archive:
         resource_table = archive.read("resources.arsc")
@@ -192,6 +203,9 @@ if __name__ == "__main__":
     splash_group = parser.add_mutually_exclusive_group()
     splash_group.add_argument("--expect-splash-skip", action="store_true")
     splash_group.add_argument("--expect-no-splash-skip", action="store_true")
+    download_group = parser.add_mutually_exclusive_group()
+    download_group.add_argument("--expect-download-unlock", action="store_true")
+    download_group.add_argument("--expect-no-download-unlock", action="store_true")
     parser.add_argument("--expect-launcher-icon", action="store_true")
     wxgroup = parser.add_mutually_exclusive_group()
     wxgroup.add_argument("--expect-wechat-share-identity", action="store_true")
@@ -200,4 +214,6 @@ if __name__ == "__main__":
     expected = True if args.expect_ads else False if args.expect_no_ads else None
     expected_wechat = True if args.expect_wechat_share_identity else False if args.expect_no_wechat_share_identity else None
     expected_splash = True if args.expect_splash_skip else False if args.expect_no_splash_skip else None
-    verify(args.apk, args.report, expected, args.expect_launcher_icon, expected_wechat, expected_splash)
+    expected_download = True if args.expect_download_unlock else False if args.expect_no_download_unlock else None
+    verify(args.apk, args.report, expected, args.expect_launcher_icon, expected_wechat, expected_splash,
+           expected_download)

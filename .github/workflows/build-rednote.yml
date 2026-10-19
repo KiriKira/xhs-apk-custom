@@ -11,10 +11,12 @@ on:
       - "rednote_signature_compat.py"
       - "rednote_ad_patch.py"
       - "rednote_ad_display_helper.py"
+      - "rednote_download_unlock_patch.py"
       - "rednote_splash_ad_patch.py"
       - "test_build_rednote.py"
       - "test_rednote_signature_compat.py"
       - "test_rednote_ad_patch.py"
+      - "test_rednote_download_unlock_patch.py"
       - "test_rednote_splash_ad_patch.py"
       - "tests/**"
       - "requirements.txt"
@@ -58,6 +60,11 @@ on:
         type: boolean
         required: true
         default: true
+      allow_disabled_downloads:
+        description: Unlock saving for notes whose author disabled downloads
+        type: boolean
+        required: true
+        default: true
       wechat_share_identity:
         description: Declare the official international REDnote package for WeChat shares
         type: boolean
@@ -77,10 +84,12 @@ jobs:
     env:
       HIDE_FEED_ADS: ${{ github.event_name != 'workflow_dispatch' || inputs.hide_feed_ads }}
       SKIP_SPLASH_ADS: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_splash_ads }}
+      ALLOW_DISABLED_DOWNLOADS: ${{ github.event_name != 'workflow_dispatch' || inputs.allow_disabled_downloads }}
       WECHAT_SHARE_IDENTITY: ${{ github.event_name != 'workflow_dispatch' || inputs.wechat_share_identity }}
     outputs:
       hide_feed_ads: ${{ steps.build_variant.outputs.hide_feed_ads }}
       skip_splash_ads: ${{ steps.build_variant.outputs.skip_splash_ads }}
+      allow_disabled_downloads: ${{ steps.build_variant.outputs.allow_disabled_downloads }}
       wechat_share_identity: ${{ steps.build_variant.outputs.wechat_share_identity }}
     steps:
       - name: Checkout
@@ -102,6 +111,7 @@ jobs:
         run: |
           echo "hide_feed_ads=$HIDE_FEED_ADS" >> "$GITHUB_OUTPUT"
           echo "skip_splash_ads=$SKIP_SPLASH_ADS" >> "$GITHUB_OUTPUT"
+          echo "allow_disabled_downloads=$ALLOW_DISABLED_DOWNLOADS" >> "$GITHUB_OUTPUT"
           echo "wechat_share_identity=$WECHAT_SHARE_IDENTITY" >> "$GITHUB_OUTPUT"
 
       - name: Require ad patches enabled for release
@@ -152,7 +162,7 @@ jobs:
           fi
 
       - name: Run Rednote unit tests
-        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch test_rednote_splash_ad_patch test_rednote_wechat_share_patch
+        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch test_rednote_download_unlock_patch test_rednote_splash_ad_patch test_rednote_wechat_share_patch
 
       - name: Download and verify pinned source for a fresh build
         shell: bash
@@ -201,6 +211,9 @@ jobs:
           if [[ "$SKIP_SPLASH_ADS" == "true" ]]; then
             args+=(--skip-splash-ads)
           fi
+          if [[ "$ALLOW_DISABLED_DOWNLOADS" == "true" ]]; then
+            args+=(--allow-disabled-downloads --decode-dex classes12.dex)
+          fi
           if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
             args+=(--wechat-share-official-package)
           fi
@@ -229,6 +242,11 @@ jobs:
           else
             verify_args+=(--expect-no-splash-skip)
           fi
+          if [[ "$ALLOW_DISABLED_DOWNLOADS" == "true" ]]; then
+            verify_args+=(--expect-download-unlock)
+          else
+            verify_args+=(--expect-no-download-unlock)
+          fi
           if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
             verify_args+=(--expect-wechat-share-identity)
           else
@@ -255,7 +273,7 @@ jobs:
     needs: build
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/rednote-v')) ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish && inputs.hide_feed_ads && inputs.skip_splash_ads)
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish && inputs.hide_feed_ads && inputs.skip_splash_ads && inputs.allow_disabled_downloads)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -295,7 +313,9 @@ jobs:
             sha256sum --check SHA256SUMS
           )
           cat > release-notes.md <<'NOTES'
-          REDnote 9.48.1 fold build with the 小K书 launcher icon, discovery-feed ad cards hidden, the cold-start splash ad skipped through the app's original no-ad path, the source main-process name preserved, and the compiled resource-table package name set to `com.kirikira.rednote.fold`.
+          REDnote 9.48.1 fold build with the 小K书 launcher icon, discovery-feed ad cards hidden, the cold-start splash ad skipped through the app's original no-ad path, author-disabled downloads unlocked through the app's normal save path, the source main-process name preserved, and the compiled resource-table package name set to `com.kirikira.rednote.fold`.
+
+          The author-disabled download patch returns the normal (allowed) branch from the single `MediaSaveConfig` save-permission getter. Notes whose author disabled downloads now expose the same save button and click path as ordinary notes. The server payload, the stored `disable_save` field, the Parcel representation and every unrelated `MediaSaveConfig` accessor remain unchanged.
 
           The application keeps the source process name `com.xingin.xhs` and the original main-process predicate. Its resource table uses the clone package name `com.kirikira.rednote.fold`; this lets the clone keep its distinct Android package identity while preserving the source process behavior.
 
@@ -315,7 +335,7 @@ jobs:
 
           **WeChat sharing requires the official international REDnote (Google Play edition, package `com.xingin.xhs`) installed alongside 小K书.** The account owner confirmed successful WeChat sharing with this configuration in release `rednote-v9.48.1-6`. Callbacks may return to the official REDnote app. [Install official international REDnote](https://play.google.com/store/apps/details?id=com.xingin.xhs).
 
-          To return to the previous stable build, overlay-install [rednote-v9.48.1-6](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-6/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
+          To return to the previous stable build, overlay-install [rednote-v9.48.1-7](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-7/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
           NOTES
           fi
 

@@ -32,6 +32,10 @@ from rednote_signature_compat import (
 )
 from rednote_ad_patch import ADAPTER, patch_feed_bind, verify_compiled_feed_patch
 from rednote_ad_display_helper import build_ad_display_dex
+from rednote_download_unlock_patch import (
+    patch_media_save_config,
+    verify_compiled_download_unlock,
+)
 from rednote_splash_ad_patch import patch_splash_ad_dispatch, verify_compiled_splash_patch
 from rednote_resource_package import rename_resource_package
 from rednote_launcher_icon import prepare_launcher_icons
@@ -1336,6 +1340,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip the cold-start splash ad through the original no-ad path; preserve requests",
     )
     parser.add_argument(
+        "--allow-disabled-downloads", action="store_true",
+        help=(
+            "Let notes whose author disabled saving take the normal save/download path; "
+            "the server payload and stored disable_save field stay unchanged"
+        ),
+    )
+    parser.add_argument(
         "--launcher-icon", type=Path,
         help="Replace the pinned launcher PNGs using this artwork and its sibling -foreground.png",
     )
@@ -1672,6 +1683,31 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             except Exception as exc:
                 raise BuildError(f"Could not prepare splash-ad display patch: {exc}") from exc
 
+        download_unlock_audit: dict[str, Any] = {"enabled": False}
+        if args.allow_disabled_downloads:
+            try:
+                save_config_smali = find_smali_class(
+                    decoded_dir, "com.xingin.entities.MediaSaveConfig"
+                )
+                download_unlock_audit = {
+                    "enabled": True,
+                    **patch_media_save_config(save_config_smali),
+                }
+                download_unlock_touched_dex = dex_name_for_smali(
+                    decoded_dir, save_config_smali
+                )
+                touched_dex_names.add(download_unlock_touched_dex)
+                download_unlock_audit["touchedDexEntry"] = download_unlock_touched_dex
+                warnings.append(
+                    "--allow-disabled-downloads returns the normal save/download path for "
+                    "notes whose author disabled saving; the stored disable_save field and "
+                    "server payload are unchanged."
+                )
+            except Exception as exc:
+                raise BuildError(
+                    f"Could not prepare author-disabled download unlock: {exc}"
+                ) from exc
+
         if args.decode_dex:
             missing_touched_dex = touched_dex_names - set(args.decode_dex)
             if missing_touched_dex:
@@ -1752,6 +1788,10 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             feed_ad_audit["compiledVerification"] = verify_compiled_feed_patch(output_path)
         if args.skip_splash_ads:
             splash_ad_audit["compiledVerification"] = verify_compiled_splash_patch(output_path)
+        if args.allow_disabled_downloads:
+            download_unlock_audit["compiledVerification"] = verify_compiled_download_unlock(
+                output_path
+            )
         report = {
             "schemaVersion": 1,
             "sourceDescription": redact_phone_like_text(source_description),
@@ -1806,6 +1846,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             },
             "feedAdDisplay": feed_ad_audit,
             "splashAdDisplay": splash_ad_audit,
+            "authorDisabledDownloadUnlock": download_unlock_audit,
             "launcherIcon": icon_audit,
             "wechatShareIdentity": wechat_share_audit,
             "mainProcessCompatibility": {

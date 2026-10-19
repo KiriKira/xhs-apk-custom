@@ -40,7 +40,7 @@ The persistent test signing key is kept in `ks_pkcs12.keystore` so future custom
 
 The APKPure REDnote 9.48.1 base is built as `rednote-fold-custom.apk`, package `com.kirikira.rednote.fold`, using the same signing key. It can coexist with the domestic `com.xingin.xhs` build.
 
-Stable release: `rednote-v9.48.1-7` (小K书 launcher icon, discovery-feed ad display patch, cold-start splash-ad skip, package-compatibility fix, and WeChat sharing).
+Stable release: `rednote-v9.48.1-8` (小K书 launcher icon, discovery-feed ad display patch, cold-start splash-ad skip, author-disabled download unlock, package-compatibility fix, and WeChat sharing).
 
 **微信分享需要同时安装官方国际版 REDnote（Google Play 版），与小K书共存。** The account owner confirmed sharing in this configuration. See [WeChat sharing](docs/WECHAT_SHARE_IDENTITY.md).
 
@@ -62,6 +62,7 @@ Historical builds reached the SMS verification page in ARM Waydroid. This does n
 - `docs/SIGNATURE_PROTECTION.md` — signature/integrity notes.
 - `docs/REFERENCES.md` — source references.
 - `docs/SPLASH_AD_SKIP_PATCH.md` — cold-start splash-ad skip scope and evidence.
+- `docs/AUTHOR_DISABLED_DOWNLOAD_UNLOCK.md` — author-disabled download unlock scope and evidence.
 
 ## Key findings
 
