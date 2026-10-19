@@ -148,7 +148,7 @@ def verify_compiled_share_panel_patch(apk: Path) -> dict:
                 "Z",
             ):
                 field_reads += 1
-        if opcode == 0x12 and (unit >> 8) == 0:
+        if opcode == 0x12 and ((unit >> 8) & 0xF) == 0 and ((unit >> 12) & 0xF) == 0:
             if position + 1 < len(units) and (units[position + 1] & 0xFF) == 0x0F:
                 false_return += 1
 

@@ -40,6 +40,10 @@ from rednote_share_download_unlock_patch import (
     patch_share_panel_download,
     verify_compiled_share_panel_patch,
 )
+from rednote_function_switch_download_patch import (
+    patch_image_download_switch,
+    verify_compiled_image_download_switch,
+)
 from rednote_splash_ad_patch import patch_splash_ad_dispatch, verify_compiled_splash_patch
 from rednote_resource_package import rename_resource_package
 from rednote_launcher_icon import prepare_launcher_icons
@@ -1689,6 +1693,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
 
         download_unlock_audit: dict[str, Any] = {"enabled": False}
         share_panel_unlock_audit: dict[str, Any] = {"enabled": False}
+        function_switch_unlock_audit: dict[str, Any] = {"enabled": False}
         if args.allow_disabled_downloads:
             try:
                 save_config_smali = find_smali_class(
@@ -1719,6 +1724,22 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                         "Download unlock patches unexpectedly target different DEX entries"
                     )
                 share_panel_unlock_audit["touchedDexEntry"] = share_panel_touched_dex
+
+                function_switch_smali = find_smali_class(
+                    decoded_dir, "com.xingin.entities.notedetail.FunctionSwitch"
+                )
+                function_switch_unlock_audit = {
+                    "enabled": True,
+                    **patch_image_download_switch(function_switch_smali),
+                }
+                function_switch_touched_dex = dex_name_for_smali(
+                    decoded_dir, function_switch_smali
+                )
+                if function_switch_touched_dex != download_unlock_touched_dex:
+                    raise BuildError(
+                        "Download unlock patches unexpectedly target different DEX entries"
+                    )
+                function_switch_unlock_audit["touchedDexEntry"] = function_switch_touched_dex
 
                 warnings.append(
                     "--allow-disabled-downloads returns the normal save/download path for "
@@ -1817,6 +1838,9 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             share_panel_unlock_audit["compiledVerification"] = (
                 verify_compiled_share_panel_patch(output_path)
             )
+            function_switch_unlock_audit["compiledVerification"] = (
+                verify_compiled_image_download_switch(output_path)
+            )
         report = {
             "schemaVersion": 1,
             "sourceDescription": redact_phone_like_text(source_description),
@@ -1873,6 +1897,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             "splashAdDisplay": splash_ad_audit,
             "authorDisabledDownloadUnlock": download_unlock_audit,
             "sharePanelDownloadUnlock": share_panel_unlock_audit,
+            "imageDownloadSwitchUnlock": function_switch_unlock_audit,
             "launcherIcon": icon_audit,
             "wechatShareIdentity": wechat_share_audit,
             "mainProcessCompatibility": {

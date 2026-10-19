@@ -20,6 +20,7 @@ from rednote_ad_patch import verify_compiled_feed_patch
 from rednote_splash_ad_patch import verify_compiled_splash_patch
 from rednote_download_unlock_patch import verify_compiled_download_unlock
 from rednote_share_download_unlock_patch import verify_compiled_share_panel_patch
+from rednote_function_switch_download_patch import verify_compiled_image_download_switch
 from tools.build_rednote_package_fix import verify_manifest_process
 from verify_fold_dex import verify_fold_gates
 from verify_rednote_process_gate import verify_process_gate
@@ -150,6 +151,15 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
         require(share_panel.get("touchedDexEntry") == "classes12.dex",
                 "Unexpected share-panel download DEX")
         share_panel["compiledVerification"] = verify_compiled_share_panel_patch(apk)
+        expected_entries.add("classes12.dex")
+    image_switch = report.get("imageDownloadSwitchUnlock", {"enabled": False})
+    require(type(image_switch.get("enabled")) is bool, "Invalid image-download switch patch flag")
+    require(image_switch.get("enabled") is download_unlock.get("enabled"),
+            "Image-download switch patch is inconsistent with the download unlock")
+    if image_switch["enabled"]:
+        require(image_switch.get("touchedDexEntry") == "classes12.dex",
+                "Unexpected image-download switch DEX")
+        image_switch["compiledVerification"] = verify_compiled_image_download_switch(apk)
         expected_entries.add("classes12.dex")
     require(set(report["modifiedEntries"]) == expected_entries, "Unexpected modified entries")
     with zipfile.ZipFile(apk) as archive:
