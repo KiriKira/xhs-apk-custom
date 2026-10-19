@@ -19,6 +19,7 @@ from rednote_wechat_share_patch import verify_compiled_wechat_share_identity
 from rednote_ad_patch import verify_compiled_feed_patch
 from rednote_splash_ad_patch import verify_compiled_splash_patch
 from rednote_download_unlock_patch import verify_compiled_download_unlock
+from rednote_share_download_unlock_patch import verify_compiled_share_panel_patch
 from tools.build_rednote_package_fix import verify_manifest_process
 from verify_fold_dex import verify_fold_gates
 from verify_rednote_process_gate import verify_process_gate
@@ -140,6 +141,15 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
         require(download_unlock.get("touchedDexEntry") == "classes12.dex",
                 "Unexpected download-unlock DEX")
         download_unlock["compiledVerification"] = verify_compiled_download_unlock(apk)
+        expected_entries.add("classes12.dex")
+    share_panel = report.get("sharePanelDownloadUnlock", {"enabled": False})
+    require(type(share_panel.get("enabled")) is bool, "Invalid share-panel download patch flag")
+    require(share_panel.get("enabled") is download_unlock.get("enabled"),
+            "Download unlock patches are inconsistent")
+    if share_panel["enabled"]:
+        require(share_panel.get("touchedDexEntry") == "classes12.dex",
+                "Unexpected share-panel download DEX")
+        share_panel["compiledVerification"] = verify_compiled_share_panel_patch(apk)
         expected_entries.add("classes12.dex")
     require(set(report["modifiedEntries"]) == expected_entries, "Unexpected modified entries")
     with zipfile.ZipFile(apk) as archive:

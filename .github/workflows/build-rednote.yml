@@ -12,11 +12,13 @@ on:
       - "rednote_ad_patch.py"
       - "rednote_ad_display_helper.py"
       - "rednote_download_unlock_patch.py"
+      - "rednote_share_download_unlock_patch.py"
       - "rednote_splash_ad_patch.py"
       - "test_build_rednote.py"
       - "test_rednote_signature_compat.py"
       - "test_rednote_ad_patch.py"
       - "test_rednote_download_unlock_patch.py"
+      - "test_rednote_share_download_unlock_patch.py"
       - "test_rednote_splash_ad_patch.py"
       - "tests/**"
       - "requirements.txt"
@@ -162,7 +164,7 @@ jobs:
           fi
 
       - name: Run Rednote unit tests
-        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch test_rednote_download_unlock_patch test_rednote_splash_ad_patch test_rednote_wechat_share_patch
+        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch test_rednote_download_unlock_patch test_rednote_share_download_unlock_patch test_rednote_splash_ad_patch test_rednote_wechat_share_patch
 
       - name: Download and verify pinned source for a fresh build
         shell: bash
@@ -315,7 +317,7 @@ jobs:
           cat > release-notes.md <<'NOTES'
           REDnote 9.48.1 fold build with the 小K书 launcher icon, discovery-feed ad cards hidden, the cold-start splash ad skipped through the app's original no-ad path, author-disabled downloads unlocked through the app's normal save path, the source main-process name preserved, and the compiled resource-table package name set to `com.kirikira.rednote.fold`.
 
-          The author-disabled download patch returns the normal (allowed) branch from the single `MediaSaveConfig` save-permission getter. Notes whose author disabled downloads now expose the same save button and click path as ordinary notes. The server payload, the stored `disable_save` field, the Parcel representation and every unrelated `MediaSaveConfig` accessor remain unchanged.
+          The author-disabled download patch enables the existing save paths for notes whose author disabled downloads. The note-detail and gallery gates take their normal allowed branch, and the share sheet's `download_all_image_new` entry no longer renders greyed or shows the server's disable toast; other share entries keep the server's disable flag. The server payload, the stored `disable_save` field, the share entry's `disableToast`, the Parcel representation and every unrelated accessor remain unchanged.
 
           The application keeps the source process name `com.xingin.xhs` and the original main-process predicate. Its resource table uses the clone package name `com.kirikira.rednote.fold`; this lets the clone keep its distinct Android package identity while preserving the source process behavior.
 
@@ -335,7 +337,7 @@ jobs:
 
           **WeChat sharing requires the official international REDnote (Google Play edition, package `com.xingin.xhs`) installed alongside 小K书.** The account owner confirmed successful WeChat sharing with this configuration in release `rednote-v9.48.1-6`. Callbacks may return to the official REDnote app. [Install official international REDnote](https://play.google.com/store/apps/details?id=com.xingin.xhs).
 
-          To return to the previous stable build, overlay-install [rednote-v9.48.1-7](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-7/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
+          To return to the previous stable build, overlay-install [rednote-v9.48.1-8](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-8/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
           NOTES
           fi
 

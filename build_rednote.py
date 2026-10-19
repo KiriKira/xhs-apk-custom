@@ -36,6 +36,10 @@ from rednote_download_unlock_patch import (
     patch_media_save_config,
     verify_compiled_download_unlock,
 )
+from rednote_share_download_unlock_patch import (
+    patch_share_panel_download,
+    verify_compiled_share_panel_patch,
+)
 from rednote_splash_ad_patch import patch_splash_ad_dispatch, verify_compiled_splash_patch
 from rednote_resource_package import rename_resource_package
 from rednote_launcher_icon import prepare_launcher_icons
@@ -1684,6 +1688,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 raise BuildError(f"Could not prepare splash-ad display patch: {exc}") from exc
 
         download_unlock_audit: dict[str, Any] = {"enabled": False}
+        share_panel_unlock_audit: dict[str, Any] = {"enabled": False}
         if args.allow_disabled_downloads:
             try:
                 save_config_smali = find_smali_class(
@@ -1698,10 +1703,27 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 )
                 touched_dex_names.add(download_unlock_touched_dex)
                 download_unlock_audit["touchedDexEntry"] = download_unlock_touched_dex
+
+                share_operate_smali = find_smali_class(
+                    decoded_dir, "com.xingin.entities.ShareInfoDetail$Operate"
+                )
+                share_panel_unlock_audit = {
+                    "enabled": True,
+                    **patch_share_panel_download(share_operate_smali),
+                }
+                share_panel_touched_dex = dex_name_for_smali(
+                    decoded_dir, share_operate_smali
+                )
+                if share_panel_touched_dex != download_unlock_touched_dex:
+                    raise BuildError(
+                        "Download unlock patches unexpectedly target different DEX entries"
+                    )
+                share_panel_unlock_audit["touchedDexEntry"] = share_panel_touched_dex
+
                 warnings.append(
                     "--allow-disabled-downloads returns the normal save/download path for "
-                    "notes whose author disabled saving; the stored disable_save field and "
-                    "server payload are unchanged."
+                    "notes whose author disabled saving; the stored disable_save field, the "
+                    "share-panel disable_toast and the server payload are unchanged."
                 )
             except Exception as exc:
                 raise BuildError(
@@ -1792,6 +1814,9 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             download_unlock_audit["compiledVerification"] = verify_compiled_download_unlock(
                 output_path
             )
+            share_panel_unlock_audit["compiledVerification"] = (
+                verify_compiled_share_panel_patch(output_path)
+            )
         report = {
             "schemaVersion": 1,
             "sourceDescription": redact_phone_like_text(source_description),
@@ -1847,6 +1872,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             "feedAdDisplay": feed_ad_audit,
             "splashAdDisplay": splash_ad_audit,
             "authorDisabledDownloadUnlock": download_unlock_audit,
+            "sharePanelDownloadUnlock": share_panel_unlock_audit,
             "launcherIcon": icon_audit,
             "wechatShareIdentity": wechat_share_audit,
             "mainProcessCompatibility": {
