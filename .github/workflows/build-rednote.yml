@@ -48,7 +48,7 @@ on:
         description: Release tag to create or use
         type: string
         required: true
-        default: rednote-v9.48.1-7
+        default: rednote-v9.48.1-9
       prerelease:
         description: Mark the published GitHub Release as a pre-release
         type: boolean

@@ -7,7 +7,7 @@ The REDnote build is independent of the domestic `build_xhs.py` workflow and rel
 | Package | `com.xingin.xhs` | `com.kirikira.rednote.fold` |
 | Source versionCode | `9334801` | `9481803` (9.48.1) |
 | APK asset | `xhs-fold8-custom.apk` | `rednote-fold-custom.apk` |
-| Release tag | `v1.0.0` | `rednote-v9.48.1-7` (stable: 小K书 icon, ads hidden, splash ad skipped, package compatibility, WeChat sharing); `rednote-v9.48.1-6` (previous stable) |
+| Release tag | `v1.0.0` | `rednote-v9.48.1-9` (stable: 小K书 icon, ads hidden, splash ad skipped, author-disabled downloads unlocked, package compatibility, WeChat sharing); `rednote-v9.48.1-8` (previous stable) |
 | Workflow | `build-xhs.yml` | `build-rednote.yml` |
 
 Both outputs use the repository's existing `ks_pkcs12.keystore`, alias `jhc`. The actual APK signer SHA-256 is `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4`, independently verified against the domestic v1.0.0 release APK.
@@ -42,6 +42,8 @@ The ad-display patch preserves the original card bind and requests, then hides c
 
 The splash-ad skip patch (`--skip-splash-ads`) changes one branch in the cold-start splash result dispatcher `uy.f.a(...)`: the ad callback path is replaced by an unconditional jump to the original no-ad path, so the home view is created without an ad. The request, payload download and telemetry are unchanged. See [scope and evidence](SPLASH_AD_SKIP_PATCH.md).
 
+The author-disabled download patch (`--allow-disabled-downloads`) enables the existing save paths without changing the server payload: `MediaSaveConfig.d()` returns false, the `image_download` function switch reports enabled, and the share sheet's `download_all_image_new` entry reports enabled. Other switches and share entries keep the server flag. See [scope and evidence](AUTHOR_DISABLED_DOWNLOAD_UNLOCK.md).
+
 ## Observed login result
 
 [ARM Waydroid test run 37636029064](https://github.com/KiriKira/xhs-apk-custom/actions/runs/37636029064) tested the patched `fold-compat` configuration with package `com.kirikira.rednote.fold`. It reached the SMS verification page, and the account owner confirmed receipt of the SMS. That flow showed no unsafe-environment rejection. Final verification/login was not tested; the account owner requested stopping at this point. These observations apply to this test and do not establish that every device/account will pass final authentication.
@@ -52,8 +54,8 @@ The splash-ad skip patch (`--skip-splash-ads`) changes one branch in the cold-st
 
 Android blocks a lower `versionCode` during ordinary installation. Both REDnote revisions deliberately keep `versionCode=9481803` and `versionName=9.48.1`; only the Release tags count patch revisions. The package ID and cryptographic signing identity also remain identical. This allows direct replacement in either direction instead of uninstalling the app.
 
-- Stable revision with the 小K书 launcher icon, ad-display patch, splash-ad skip, package compatibility fix and WeChat sharing: `rednote-v9.48.1-7`.
-- Previous stable build without the splash-ad skip: `rednote-v9.48.1-6`.
+- Stable revision with the 小K书 launcher icon, ad-display patch, splash-ad skip, author-disabled download unlock, package compatibility fix and WeChat sharing: `rednote-v9.48.1-9`.
+- Previous stable build without the function-switch/share-entry unlock: `rednote-v9.48.1-8`.
 - [Return to the fixed build with ads shown](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-3/rednote-fold-custom.apk).
 
 Publishing checks package, versions and signer; a separate rollback VM is no longer a release gate,
