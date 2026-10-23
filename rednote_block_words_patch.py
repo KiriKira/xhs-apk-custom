@@ -150,13 +150,21 @@ JAVA_SOURCES = {
 import android.content.Context;
 import android.content.SharedPreferences;
 
-/** Keyword list storage shared by the settings page and the feed filter. */
+/** Keyword list storage plus tiny diagnostics shared by the page and the feed filter. */
 public final class BlockSettings {
     private static final String PREFS = "kiri_xhs_block_words";
     private static final String KEY = "words";
+    private static final String KEY_SAVED_AT = "saved_at";
+    private static final String KEY_SEEN = "diag_seen";
+    private static final String KEY_HIT = "diag_hit";
+    private static final String KEY_WORDS = "diag_words";
+    private static final String KEY_SAMPLE = "diag_sample";
+    private static final String LOG_TAG = "kiri-block";
 
     private static volatile String cachedRaw;
     private static volatile String[] cachedWords;
+    private static int seen;
+    private static int hits;
 
     private BlockSettings() {
     }
@@ -177,7 +185,7 @@ public final class BlockSettings {
     public static String[] words(Context context) {
         String value = raw(context);
         String[] cached = cachedWords;
-        if (value.equals(cachedRaw) && cached != null) {
+        if (cached != null && value.equals(cachedRaw)) {
             return cached;
         }
         String[] parsed = parse(value);
@@ -188,7 +196,12 @@ public final class BlockSettings {
 
     public static void save(Context context, String value) {
         String normalized = value == null ? "" : value;
-        prefs(context).edit().putString(KEY, normalized).apply();
+        prefs(context)
+                .edit()
+                .putString(KEY, normalized)
+                .putLong(KEY_SAVED_AT, System.currentTimeMillis())
+                .putInt(KEY_WORDS, parse(normalized).length)
+                .apply();
         cachedRaw = normalized;
         cachedWords = parse(normalized);
     }
@@ -206,6 +219,56 @@ public final class BlockSettings {
         }
         return out.toArray(new String[out.size()]);
     }
+
+    /** Called by the feed filter for every bound card so the page can show what happened. */
+    public static synchronized void record(Context context, String sample, boolean hit, int wordCount) {
+        try {
+            seen++;
+            if (hit) {
+                hits++;
+            }
+            String text = sample == null ? "" : sample.trim();
+            if (text.length() > 300) {
+                text = text.substring(0, 300);
+            }
+            boolean write = seen <= 3 || hit || seen % 15 == 0;
+            if (!write) {
+                return;
+            }
+            prefs(context)
+                    .edit()
+                    .putInt(KEY_SEEN, seen)
+                    .putInt(KEY_HIT, hits)
+                    .putInt(KEY_WORDS, wordCount)
+                    .putString(KEY_SAMPLE, text)
+                    .apply();
+            if (seen <= 3 || hit) {
+                android.util.Log.i(LOG_TAG, "card#" + seen + " words=" + wordCount
+                        + " hit=" + hit + " text=" + text);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static String diagnostics(Context context) {
+        try {
+            SharedPreferences prefs = prefs(context);
+            int words = prefs.getInt(KEY_WORDS, parse(raw(context)).length);
+            long savedAt = prefs.getLong(KEY_SAVED_AT, 0L);
+            String saved = savedAt == 0L ? "未保存过" : "已保存 " + words + " 个屏蔽词";
+            String sample = prefs.getString(KEY_SAMPLE, "");
+            if (sample == null) {
+                sample = "";
+            }
+            return saved
+                    + "\n已检查卡片 " + prefs.getInt(KEY_SEEN, 0) + " 张，命中 "
+                    + prefs.getInt(KEY_HIT, 0) + " 张"
+                    + "\n最近一张卡片的可见文本：\n"
+                    + (sample.length() == 0 ? "(无)" : sample);
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
 }
 """,
     "FeedKeywordFilter.java": r"""package dev.kiri.xhsads;
@@ -214,43 +277,92 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.List;
+
 /**
- * Decides whether an already-bound feed card shows a blocked keyword. The text
- * snapshot is taken from the card's own TextViews, so no obfuscated entity field
- * has to be read and every card type behaves the same way.
+ * Decides whether an already-bound feed card matches a blocked keyword. Two sources are used: the
+ * text of the card's own TextViews, and the String fields of the bound adapter item, so a card whose
+ * title never reaches a TextView can still be matched.
  */
 public final class FeedKeywordFilter {
-    private static final int MAX_DEPTH = 14;
+    private static final int MAX_DEPTH = 16;
+    private static final String RECYCLER_CLASS = "androidx.recyclerview.widget.RecyclerView";
 
     private FeedKeywordFilter() {
     }
 
     public static boolean matches(View root) {
+        boolean hit = false;
+        String text = "";
         try {
             if (root == null) {
                 return false;
             }
             String[] words = BlockSettings.words(root.getContext());
-            if (words.length == 0) {
-                return false;
+            text = snapshot(root);
+            if (words.length > 0 && text.length() > 0) {
+                hit = containsAny(text, words);
             }
-            String text = collect(root, 0);
-            if (text.length() == 0) {
-                return false;
-            }
-            String haystack = text.toLowerCase(java.util.Locale.ROOT);
-            for (int index = 0; index < words.length; index++) {
-                String needle = words[index].toLowerCase(java.util.Locale.ROOT);
-                if (needle.length() > 0 && haystack.contains(needle)) {
-                    return true;
-                }
-            }
+            BlockSettings.record(root.getContext(), text, hit, words.length);
         } catch (Throwable ignored) {
+        }
+        return hit;
+    }
+
+    private static boolean containsAny(String haystack, String[] words) {
+        String lower = haystack.toLowerCase(java.util.Locale.ROOT);
+        String compact = compact(lower);
+        for (int index = 0; index < words.length; index++) {
+            String needle = words[index].toLowerCase(java.util.Locale.ROOT);
+            if (needle.length() == 0) {
+                continue;
+            }
+            if (lower.contains(needle)) {
+                return true;
+            }
+            String dense = compact(needle);
+            if (dense.length() > 0 && compact.contains(dense)) {
+                return true;
+            }
         }
         return false;
     }
 
-    private static String collect(View view, int depth) {
+    /** Drops separators so "日本 签证" and "日本签证" compare equal. */
+    private static String compact(String value) {
+        StringBuilder builder = new StringBuilder(value.length());
+        for (int index = 0; index < value.length(); index++) {
+            char current = value.charAt(index);
+            if (Character.isWhitespace(current) || current == '\u3000' || current == '\u00a0'
+                    || current == '·' || current == '-' || current == '_' || current == '/') {
+                continue;
+            }
+            builder.append(current);
+        }
+        return builder.toString();
+    }
+
+    private static String snapshot(View root) {
+        StringBuilder builder = new StringBuilder();
+        try {
+            builder.append(collectViews(root, 0));
+        } catch (Throwable ignored) {
+        }
+        try {
+            builder.append('\n').append(collectItem(root));
+        } catch (Throwable ignored) {
+        }
+        try {
+            CharSequence description = root.getContentDescription();
+            builder.append('\n').append(description == null ? "" : description.toString());
+        } catch (Throwable ignored) {
+        }
+        return builder.toString();
+    }
+
+    private static String collectViews(View view, int depth) {
         if (view == null || depth > MAX_DEPTH) {
             return "";
         }
@@ -266,18 +378,156 @@ public final class FeedKeywordFilter {
             ViewGroup group = (ViewGroup) view;
             int count = group.getChildCount();
             for (int index = 0; index < count; index++) {
-                builder.append(collect(group.getChildAt(index), depth + 1));
+                builder.append(collectViews(group.getChildAt(index), depth + 1));
             }
         }
         return builder.toString();
     }
 
-    /** Skip like/view counters such as "1.2万" or "3,215" so numeric words stay usable. */
+    private static String collectItem(View root) {
+        try {
+            Object recycler = findRecycler(root);
+            if (recycler == null) {
+                return "";
+            }
+            Object holder = Class.forName(RECYCLER_CLASS)
+                    .getMethod("getChildViewHolder", View.class)
+                    .invoke(null, root);
+            if (holder == null) {
+                return "";
+            }
+            int position = position(holder);
+            if (position < 0) {
+                return "";
+            }
+            Object adapter = recycler.getClass().getMethod("getAdapter").invoke(recycler);
+            if (adapter == null) {
+                return "";
+            }
+            List<?> items = items(adapter);
+            if (items == null || position >= items.size()) {
+                return "";
+            }
+            StringBuilder builder = new StringBuilder();
+            collectStrings(items.get(position), builder, 2, 0);
+            return builder.toString();
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private static Object findRecycler(View root) {
+        try {
+            Object current = root;
+            for (int level = 0; level < 24 && current != null; level++) {
+                if (RECYCLER_CLASS.equals(current.getClass().getName())) {
+                    return current;
+                }
+                current = ((View) current).getParent();
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static int position(Object holder) {
+        String[] names = {
+            "getBindingAdapterPosition", "getAbsoluteAdapterPosition", "getAdapterPosition"
+        };
+        for (int index = 0; index < names.length; index++) {
+            try {
+                Object value = holder.getClass().getMethod(names[index]).invoke(holder);
+                if (value instanceof Integer) {
+                    int position = ((Integer) value).intValue();
+                    if (position >= 0) {
+                        return position;
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return -1;
+    }
+
+    private static List<?> items(Object adapter) {
+        try {
+            Method[] methods = adapter.getClass().getMethods();
+            for (int index = 0; index < methods.length; index++) {
+                Method method = methods[index];
+                if (method.getParameterTypes().length != 0
+                        || !List.class.isAssignableFrom(method.getReturnType())) {
+                    continue;
+                }
+                Object value = method.invoke(adapter);
+                if (value instanceof List) {
+                    return (List<?>) value;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static void collectStrings(Object item, StringBuilder out, int depth, int level) {
+        if (item == null || out.length() > 900 || level > depth) {
+            return;
+        }
+        if (item instanceof String) {
+            String value = ((String) item).trim();
+            if (value.length() > 0 && !isCounter(value)) {
+                out.append(value).append('\n');
+            }
+            return;
+        }
+        if (item instanceof List) {
+            List<?> list = (List<?>) item;
+            int count = Math.min(list.size(), 12);
+            for (int index = 0; index < count; index++) {
+                collectStrings(list.get(index), out, depth, level + 1);
+            }
+            return;
+        }
+        String type = item.getClass().getName();
+        if (!type.startsWith("com.xingin") && !type.startsWith("java.lang")) {
+            return;
+        }
+        Class<?> current = item.getClass();
+        for (int step = 0; step < 3 && current != null && current != Object.class; step++) {
+            Field[] fields;
+            try {
+                fields = current.getDeclaredFields();
+            } catch (Throwable ignored) {
+                break;
+            }
+            for (int index = 0; index < fields.length; index++) {
+                Field field = fields[index];
+                try {
+                    if (field.getType().isPrimitive()) {
+                        continue;
+                    }
+                    field.setAccessible(true);
+                    Object value = field.get(item);
+                    if (value == null || value == item) {
+                        continue;
+                    }
+                    if (value instanceof String) {
+                        collectStrings(value, out, depth, level);
+                    } else if (level < depth) {
+                        collectStrings(value, out, depth, level + 1);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            current = current.getSuperclass();
+        }
+    }
+
+    /** Skip like/view counters such as "1.2万" or "3,215" so numeric keywords stay usable. */
     private static boolean isCounter(String value) {
         if (value.length() == 0) {
             return true;
         }
-        boolean hasLetter = false;
+        boolean hasUnit = false;
         for (int index = 0; index < value.length(); index++) {
             char current = value.charAt(index);
             if (Character.isDigit(current) || current == ' ' || current == '.' || current == ','
@@ -286,12 +536,12 @@ public final class FeedKeywordFilter {
             }
             if (current == '万' || current == 'w' || current == 'W' || current == 'k'
                     || current == 'K' || current == 'm' || current == 'M') {
-                hasLetter = true;
+                hasUnit = true;
                 continue;
             }
             return false;
         }
-        return hasLetter || value.length() <= 6;
+        return hasUnit || value.length() <= 6;
     }
 }
 """,
@@ -409,6 +659,7 @@ public final class BlockRow {
     "BlockWordsActivity.java": r"""package dev.kiri.xhsads;
 
 import android.app.Activity;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -423,6 +674,7 @@ import android.widget.Toast;
 /** Settings page reached from "小K书设置" in the settings list. */
 public final class BlockWordsActivity extends Activity {
     private EditText input;
+    private TextView diagnostics;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -433,27 +685,39 @@ public final class BlockWordsActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         int padding = dp(16);
         root.setPadding(padding, padding, padding, padding);
-        root.setBackgroundColor(0xFFFFFFFF);
+        root.setBackgroundColor(Color.WHITE);
 
         TextView hint = new TextView(this);
         hint.setText("每行一个屏蔽词（也支持逗号、顿号分隔）。\n"
                 + "信息流卡片的标题、正文或作者名命中任意一个词时，整张卡片会被隐藏。\n"
-                + "匹配不区分大小写，单纯的点赞/浏览计数不参与匹配。");
+                + "匹配不区分大小写，点赞/浏览计数不参与匹配。");
         hint.setTextSize(13f);
-        hint.setTextColor(0xFF666666);
+        hint.setTextColor(Color.rgb(0x40, 0x40, 0x40));
+        hint.setBackgroundColor(Color.rgb(0xF2, 0xF2, 0xF2));
+        hint.setPadding(dp(10), dp(10), dp(10), dp(10));
+        hint.setLineSpacing(dp(3), 1f);
         root.addView(hint, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        diagnostics = new TextView(this);
+        diagnostics.setTextSize(11f);
+        diagnostics.setTextColor(Color.rgb(0x80, 0x80, 0x80));
+        diagnostics.setPadding(0, dp(8), 0, 0);
+        diagnostics.setText(BlockSettings.diagnostics(this));
+        root.addView(diagnostics, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         input = new EditText(this);
         input.setGravity(Gravity.TOP | Gravity.START);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        input.setMinLines(6);
+        input.setTextColor(Color.BLACK);
+        input.setHintTextColor(Color.rgb(0x99, 0x99, 0x99));
+        input.setHint("例如：日本签证\n买一送一");
         input.setText(BlockSettings.raw(this));
-        input.setHint("例如：抽奖\n买一送一");
         LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        inputParams.topMargin = dp(12);
-        inputParams.bottomMargin = dp(12);
+        inputParams.topMargin = dp(10);
+        inputParams.bottomMargin = dp(10);
         root.addView(input, inputParams);
 
         LinearLayout buttons = new LinearLayout(this);
@@ -480,6 +744,7 @@ public final class BlockWordsActivity extends Activity {
                 Toast.makeText(BlockWordsActivity.this,
                         count == 0 ? "已清空屏蔽词" : "已保存 " + count + " 个屏蔽词",
                         Toast.LENGTH_SHORT).show();
+                refreshDiagnostics();
             }
         });
         buttons.addView(save, new LinearLayout.LayoutParams(
@@ -489,6 +754,34 @@ public final class BlockWordsActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshDiagnostics();
+    }
+
+    /** Leaving the page keeps whatever is typed, so a missed 保存 tap cannot lose the list. */
+    @Override
+    protected void onPause() {
+        super.onPause();
+        try {
+            String current = input == null ? "" : input.getText().toString();
+            if (!current.equals(BlockSettings.raw(this))) {
+                BlockSettings.save(this, current);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void refreshDiagnostics() {
+        try {
+            if (diagnostics != null) {
+                diagnostics.setText(BlockSettings.diagnostics(this));
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private int dp(int value) {
