@@ -42,6 +42,8 @@ The APKPure REDnote 9.48.1 base is built as `rednote-fold-custom.apk`, package `
 
 Stable release: `rednote-v9.48.1-9` (小K书 launcher icon, discovery-feed ad display patch, cold-start splash-ad skip, author-disabled download unlock in the note detail and share sheet, package-compatibility fix, and WeChat sharing).
 
+The builder also supports `--block-words`: a keyword blocklist for the discovery feed plus a `小K书设置` entry in the settings list (below `关于小红书`) that edits that list. See [keyword blocking](docs/BLOCK_WORDS_PATCH.md).
+
 **微信分享需要同时安装官方国际版 REDnote（Google Play 版），与小K书共存。** The account owner confirmed sharing in this configuration. See [WeChat sharing](docs/WECHAT_SHARE_IDENTITY.md).
 
 Package-compatibility build without the ad-display patch: https://github.com/KiriKira/xhs-apk-custom/releases/tag/rednote-v9.48.1-3
@@ -63,6 +65,7 @@ Historical builds reached the SMS verification page in ARM Waydroid. This does n
 - `docs/REFERENCES.md` — source references.
 - `docs/SPLASH_AD_SKIP_PATCH.md` — cold-start splash-ad skip scope and evidence.
 - `docs/AUTHOR_DISABLED_DOWNLOAD_UNLOCK.md` — author-disabled download unlock scope and evidence.
+- `docs/BLOCK_WORDS_PATCH.md` — keyword blocklist, settings entry and its validation.
 
 ## Key findings
 

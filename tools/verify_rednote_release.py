@@ -21,6 +21,10 @@ from rednote_splash_ad_patch import verify_compiled_splash_patch
 from rednote_download_unlock_patch import verify_compiled_download_unlock
 from rednote_share_download_unlock_patch import verify_compiled_share_panel_patch
 from rednote_function_switch_download_patch import verify_compiled_image_download_switch
+from rednote_block_words_patch import (
+    verify_compiled_feed_keyword_hook,
+    verify_compiled_settings_hook,
+)
 from tools.build_rednote_package_fix import verify_manifest_process
 from verify_fold_dex import verify_fold_gates
 from verify_rednote_process_gate import verify_process_gate
@@ -40,7 +44,7 @@ def require(condition, message):
 
 
 def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect_wechat_share=None,
-           expect_splash_skip=None, expect_download_unlock=None):
+           expect_splash_skip=None, expect_download_unlock=None, expect_block_words=None):
     report = json.loads(report_path.read_text())
     require(report["input"]["sha256"] == SOURCE_SHA, "Unexpected source file")
     require(report["input"]["signerCertificateSha256"] == [SOURCE_CERT], "Unexpected source signer")
@@ -126,6 +130,25 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
         require(ads["helperDexEntry"] != compat["helperDexEntry"], "Helper DEX collision")
         expected_entries.update({"classes19.dex", ads["helperDexEntry"]})
         ads["compiledVerification"] = verify_compiled_feed_patch(apk)
+    block_words = report.get("keywordBlocking", {"enabled": False})
+    require(type(block_words.get("enabled")) is bool, "Invalid keyword-block patch flag")
+    if expect_block_words is not None:
+        require(block_words["enabled"] is expect_block_words,
+                "Unexpected keyword-block patch configuration")
+    if block_words["enabled"]:
+        require(block_words.get("settingsDexEntry") == "classes15.dex",
+                "Unexpected settings activity DEX")
+        require(block_words.get("touchedDexEntries") == ["classes15.dex", "classes19.dex"],
+                "Unexpected keyword-block touched DEX entries")
+        require(block_words["helperDexEntry"] not in
+                {compat["helperDexEntry"], ads.get("helperDexEntry")},
+                "Keyword helper DEX collides with another helper")
+        require(block_words.get("manifestActivity", {}).get("activity") ==
+                "dev.kiri.xhsads.BlockWordsActivity", "Missing keyword activity declaration")
+        expected_entries.update({"classes15.dex", block_words["helperDexEntry"]})
+        block_words["compiledFeedVerification"] = verify_compiled_feed_keyword_hook(apk)
+        block_words["compiledSettingsVerification"] = verify_compiled_settings_hook(
+            apk, block_words["settingsDexEntry"])
     splash = report.get("splashAdDisplay", {"enabled": False})
     require(type(splash.get("enabled")) is bool, "Invalid splash-ad patch flag")
     if expect_splash_skip is not None:
@@ -191,6 +214,9 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
         if ads["enabled"]:
             require(hashlib.sha256(archive.read(ads["helperDexEntry"])).hexdigest() == ads["helperDexSha256"],
                     "Ad helper DEX hash mismatch")
+        if block_words["enabled"]:
+            require(hashlib.sha256(archive.read(block_words["helperDexEntry"])).hexdigest() ==
+                    block_words["helperDexSha256"], "Keyword helper DEX hash mismatch")
     report["compiledSignatureCompatibilityVerification"] = verify_signature_compat(apk, PACKAGE, SOURCE_CERT)
     report["compiledMainProcessGateVerification"] = verify_process_gate(apk, SOURCE_PROCESS)
     manifest_process = verify_manifest_process(apk, os.environ.get("AAPT2", "aapt2"))
@@ -227,6 +253,9 @@ if __name__ == "__main__":
     download_group.add_argument("--expect-download-unlock", action="store_true")
     download_group.add_argument("--expect-no-download-unlock", action="store_true")
     parser.add_argument("--expect-launcher-icon", action="store_true")
+    words_group = parser.add_mutually_exclusive_group()
+    words_group.add_argument("--expect-block-words", action="store_true")
+    words_group.add_argument("--expect-no-block-words", action="store_true")
     wxgroup = parser.add_mutually_exclusive_group()
     wxgroup.add_argument("--expect-wechat-share-identity", action="store_true")
     wxgroup.add_argument("--expect-no-wechat-share-identity", action="store_true")
@@ -235,5 +264,6 @@ if __name__ == "__main__":
     expected_wechat = True if args.expect_wechat_share_identity else False if args.expect_no_wechat_share_identity else None
     expected_splash = True if args.expect_splash_skip else False if args.expect_no_splash_skip else None
     expected_download = True if args.expect_download_unlock else False if args.expect_no_download_unlock else None
+    expected_block_words = True if args.expect_block_words else False if args.expect_no_block_words else None
     verify(args.apk, args.report, expected, args.expect_launcher_icon, expected_wechat, expected_splash,
-           expected_download)
+           expected_download, expected_block_words)

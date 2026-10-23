@@ -45,6 +45,15 @@ from rednote_function_switch_download_patch import (
     verify_compiled_image_download_switch,
 )
 from rednote_splash_ad_patch import patch_splash_ad_dispatch, verify_compiled_splash_patch
+from rednote_block_words_patch import (
+    declare_block_words_activity,
+    build_block_words_dex,
+    patch_feed_keyword_filter,
+    patch_settings_activity,
+    verify_compiled_feed_keyword_hook,
+    verify_compiled_settings_hook,
+    write_helper_smali as write_block_words_smali,
+)
 from rednote_resource_package import rename_resource_package
 from rednote_launcher_icon import prepare_launcher_icons
 from rednote_wechat_share_patch import patch_send_share_identity
@@ -1344,6 +1353,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Hide discovery-feed ad cards after original binding; preserve requests and feed data",
     )
     parser.add_argument(
+        "--block-words", action="store_true",
+        help=(
+            "Hide discovery-feed cards whose visible text matches a user keyword list, "
+            "and add a 小K书设置 entry with the keyword editor to the settings list "
+            "(requires --hide-feed-ads; also needs --decode-dex classes15.dex)"
+        ),
+    )
+    parser.add_argument(
         "--skip-splash-ads", action="store_true",
         help="Skip the cold-start splash ad through the original no-ad path; preserve requests",
     )
@@ -1545,6 +1562,19 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 raise BuildError("Unexpected existing application process label")
             application.set(ANDROID + "process", old_package)
             manifest_changes.append({"field": "application.process", "from": existing_process, "to": old_package})
+        block_words_manifest_audit: dict[str, Any] = {"enabled": False}
+        if args.block_words:
+            block_words_manifest_audit = {
+                "enabled": True,
+                **declare_block_words_activity(manifest_root),
+            }
+            manifest_changes.append(
+                {
+                    "field": "activity",
+                    "from": "(absent)",
+                    "to": "dev.kiri.xhsads.BlockWordsActivity (exported=false)",
+                }
+            )
         manifest_tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
 
         with zipfile.ZipFile(merge_input) as source_zip:
@@ -1675,6 +1705,73 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 warnings.append("--hide-feed-ads hides discovery-feed ad cards after original binding; no request or model filtering is applied.")
             except Exception as exc:
                 raise BuildError(f"Could not prepare feed-ad display patch: {exc}") from exc
+
+        block_words_audit: dict[str, Any] = {"enabled": False}
+        if args.block_words:
+            if not args.hide_feed_ads:
+                raise BuildError(
+                    "--block-words requires --hide-feed-ads: the keyword filter is installed "
+                    "in the same discovery-feed bind hook"
+                )
+            try:
+                keyword_hook = patch_feed_keyword_filter(
+                    find_smali_class(decoded_dir, ADAPTER)
+                )
+                settings_smali = find_smali_class(
+                    decoded_dir, "com.xingin.matrix.setting.SettingActivityV2"
+                )
+                settings_hook = patch_settings_activity(settings_smali)
+                settings_dex = dex_name_for_smali(decoded_dir, settings_smali)
+                touched_dex_names.add(settings_dex)
+                smali_classes = write_block_words_smali(decoded_dir)
+                block_helper = build_block_words_dex(temporary_root / "block-words")
+                block_helper_name = next_dex_name(merge_input)
+                while block_helper_name in signature_compat_added_entries:
+                    block_helper_name = (
+                        f"classes{int(block_helper_name[7:-4]) + 1}.dex"
+                    )
+                signature_compat_added_entries[block_helper_name] = block_helper
+                signature_compat_added_names.add(block_helper_name)
+                block_words_audit = {
+                    "enabled": True,
+                    **keyword_hook,
+                    **settings_hook,
+                    "touchedDexEntries": sorted(
+                        {settings_dex, "classes19.dex"} if args.hide_feed_ads else {settings_dex}
+                    ),
+                    "helperClasses": [
+                        "dev.kiri.xhsads.BlockSettings",
+                        "dev.kiri.xhsads.FeedKeywordFilter",
+                        "dev.kiri.xhsads.BlockRow",
+                        "dev.kiri.xhsads.BlockWordsActivity",
+                        "dev.kiri.xhsads.BlockEntry",
+                        "dev.kiri.xhsads.SettingsHook",
+                    ],
+                    "smaliHelperClasses": [
+                        "Ldev/kiri/xhsads/BlockBinder;",
+                        "Ldev/kiri/xhsads/BlockViewHolder;",
+                    ],
+                    "smaliHelperFiles": [
+                        path.name for path in smali_classes
+                    ],
+                    "settingsDexEntry": settings_dex,
+                    "helperDexEntry": block_helper_name,
+                    "helperDexSha256": sha256_file(block_helper),
+                    "settingsEntry": "小K书设置 row inserted below 关于小红书 in the settings list",
+                    "storage": "SharedPreferences kiri_xhs_block_words/words",
+                    "matchSource": "visible TextViews of the already-bound feed card",
+                    "manifestActivity": block_words_manifest_audit,
+                    "scope": (
+                        "Discovery/home feed cards bound by FeedCustomMultiTypeAdapter; "
+                        "search, detail pages and other surfaces are unchanged."
+                    ),
+                }
+                warnings.append(
+                    "--block-words adds a 小K书设置 row plus a keyword-settings activity and "
+                    "hides feed cards whose visible text matches a stored keyword."
+                )
+            except Exception as exc:
+                raise BuildError(f"Could not prepare keyword block patch: {exc}") from exc
 
         splash_ad_audit: dict[str, Any] = {"enabled": False}
         if args.skip_splash_ads:
@@ -1829,6 +1926,13 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         )
         if args.hide_feed_ads:
             feed_ad_audit["compiledVerification"] = verify_compiled_feed_patch(output_path)
+        if args.block_words:
+            block_words_audit["compiledFeedVerification"] = verify_compiled_feed_keyword_hook(
+                output_path
+            )
+            block_words_audit["compiledSettingsVerification"] = verify_compiled_settings_hook(
+                output_path, block_words_audit["settingsDexEntry"]
+            )
         if args.skip_splash_ads:
             splash_ad_audit["compiledVerification"] = verify_compiled_splash_patch(output_path)
         if args.allow_disabled_downloads:
@@ -1894,6 +1998,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 "touchedDexEntries": sorted(fold_touched_dex_names),
             },
             "feedAdDisplay": feed_ad_audit,
+            "keywordBlocking": block_words_audit,
             "splashAdDisplay": splash_ad_audit,
             "authorDisabledDownloadUnlock": download_unlock_audit,
             "sharePanelDownloadUnlock": share_panel_unlock_audit,

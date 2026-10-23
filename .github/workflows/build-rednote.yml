@@ -15,6 +15,7 @@ on:
       - "rednote_share_download_unlock_patch.py"
       - "rednote_function_switch_download_patch.py"
       - "rednote_splash_ad_patch.py"
+      - "rednote_block_words_patch.py"
       - "test_build_rednote.py"
       - "test_rednote_signature_compat.py"
       - "test_rednote_ad_patch.py"
@@ -22,6 +23,7 @@ on:
       - "test_rednote_share_download_unlock_patch.py"
       - "test_rednote_function_switch_download_patch.py"
       - "test_rednote_splash_ad_patch.py"
+      - "test_rednote_block_words_patch.py"
       - "tests/**"
       - "requirements.txt"
       - "ks_pkcs12.keystore"
@@ -59,6 +61,11 @@ on:
         type: boolean
         required: true
         default: true
+      block_words:
+        description: Add the 小K书设置 keyword-block page and hide matching feed cards
+        type: boolean
+        required: true
+        default: true
       skip_splash_ads:
         description: Skip the cold-start splash ad through the original no-ad path
         type: boolean
@@ -87,11 +94,13 @@ jobs:
       contents: read
     env:
       HIDE_FEED_ADS: ${{ github.event_name != 'workflow_dispatch' || inputs.hide_feed_ads }}
+      BLOCK_WORDS: ${{ github.event_name != 'workflow_dispatch' || inputs.block_words }}
       SKIP_SPLASH_ADS: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_splash_ads }}
       ALLOW_DISABLED_DOWNLOADS: ${{ github.event_name != 'workflow_dispatch' || inputs.allow_disabled_downloads }}
       WECHAT_SHARE_IDENTITY: ${{ github.event_name != 'workflow_dispatch' || inputs.wechat_share_identity }}
     outputs:
       hide_feed_ads: ${{ steps.build_variant.outputs.hide_feed_ads }}
+      block_words: ${{ steps.build_variant.outputs.block_words }}
       skip_splash_ads: ${{ steps.build_variant.outputs.skip_splash_ads }}
       allow_disabled_downloads: ${{ steps.build_variant.outputs.allow_disabled_downloads }}
       wechat_share_identity: ${{ steps.build_variant.outputs.wechat_share_identity }}
@@ -114,14 +123,15 @@ jobs:
         id: build_variant
         run: |
           echo "hide_feed_ads=$HIDE_FEED_ADS" >> "$GITHUB_OUTPUT"
+          echo "block_words=$BLOCK_WORDS" >> "$GITHUB_OUTPUT"
           echo "skip_splash_ads=$SKIP_SPLASH_ADS" >> "$GITHUB_OUTPUT"
           echo "allow_disabled_downloads=$ALLOW_DISABLED_DOWNLOADS" >> "$GITHUB_OUTPUT"
           echo "wechat_share_identity=$WECHAT_SHARE_IDENTITY" >> "$GITHUB_OUTPUT"
 
       - name: Require ad patches enabled for release
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && (!inputs.hide_feed_ads || !inputs.skip_splash_ads) }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && (!inputs.hide_feed_ads || !inputs.skip_splash_ads || !inputs.block_words) }}
         run: |
-          echo "Publishing requires both the discovery-feed ad patch and the cold-start splash-ad skip; turn off publish to build without them." >&2
+          echo "Publishing requires the discovery-feed ad patch, the cold-start splash-ad skip and the keyword-block page; turn off publish to build without them." >&2
           exit 1
 
       - name: Install Android SDK tools
@@ -166,7 +176,7 @@ jobs:
           fi
 
       - name: Run Rednote unit tests
-        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch test_rednote_download_unlock_patch test_rednote_share_download_unlock_patch test_rednote_function_switch_download_patch test_rednote_splash_ad_patch test_rednote_wechat_share_patch
+        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch test_rednote_download_unlock_patch test_rednote_share_download_unlock_patch test_rednote_function_switch_download_patch test_rednote_splash_ad_patch test_rednote_wechat_share_patch test_rednote_block_words_patch
 
       - name: Download and verify pinned source for a fresh build
         shell: bash
@@ -212,6 +222,9 @@ jobs:
           if [[ "$HIDE_FEED_ADS" == "true" ]]; then
             args+=(--hide-feed-ads --decode-dex classes19.dex)
           fi
+          if [[ "$BLOCK_WORDS" == "true" ]]; then
+            args+=(--block-words --decode-dex classes15.dex)
+          fi
           if [[ "$SKIP_SPLASH_ADS" == "true" ]]; then
             args+=(--skip-splash-ads)
           fi
@@ -240,6 +253,11 @@ jobs:
             verify_args+=(--expect-ads)
           else
             verify_args+=(--expect-no-ads)
+          fi
+          if [[ "$BLOCK_WORDS" == "true" ]]; then
+            verify_args+=(--expect-block-words)
+          else
+            verify_args+=(--expect-no-block-words)
           fi
           if [[ "$SKIP_SPLASH_ADS" == "true" ]]; then
             verify_args+=(--expect-splash-skip)
@@ -277,7 +295,7 @@ jobs:
     needs: build
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/rednote-v')) ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish && inputs.hide_feed_ads && inputs.skip_splash_ads && inputs.allow_disabled_downloads)
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish && inputs.hide_feed_ads && inputs.skip_splash_ads && inputs.allow_disabled_downloads && inputs.block_words)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -296,6 +314,7 @@ jobs:
           DISPATCH_TAG: ${{ inputs.tag }}
           IS_PRERELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
           WECHAT_SHARE_IDENTITY: ${{ needs.build.outputs.wechat_share_identity }}
+          BLOCK_WORDS: ${{ needs.build.outputs.block_words }}
         shell: bash
         run: |
           set -euo pipefail
@@ -332,6 +351,13 @@ jobs:
           Signed with `ks_pkcs12.keystore`, alias `jhc`; APK signer SHA-256 is `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4`.
           NOTES
 
+          if [[ "$BLOCK_WORDS" == "true" ]]; then
+            cat >> release-notes.md <<'NOTES'
+
+          **Keyword blocking (小K书设置):** the settings list has a new `小K书设置` row directly below `关于小红书`. Its page stores one keyword list (`SharedPreferences`, one word per line; `,`/`，`/`、`/`;` also separate entries). A discovery-feed card is hidden when the text it renders matches a keyword, reusing the same `View.GONE` + zero-height state and the same card-root restore path as the ad-display patch, so recycled cards rebind normally. Matching is case-insensitive on the card's own visible text (title, body excerpt, author name); strings that look like like/view counters such as `1.2万` are skipped so numeric keywords stay usable. The filter covers the discovery/home feed only — search results, detail pages and the follow feed are unchanged, and no request, payload or impression is modified. The row is inserted at runtime and re-checked when the settings window regains focus; if the settings adapter differs, the page opens unchanged.
+          NOTES
+          fi
+
           if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
             cat >> release-notes.md <<'NOTES'
 
@@ -339,7 +365,7 @@ jobs:
 
           **WeChat sharing requires the official international REDnote (Google Play edition, package `com.xingin.xhs`) installed alongside 小K书.** The account owner confirmed successful WeChat sharing with this configuration in release `rednote-v9.48.1-6`. Callbacks may return to the official REDnote app. [Install official international REDnote](https://play.google.com/store/apps/details?id=com.xingin.xhs).
 
-          To return to the previous stable build, overlay-install [rednote-v9.48.1-8](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-8/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
+          To return to the previous stable build, overlay-install [rednote-v9.48.1-9](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-9/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
           NOTES
           fi
 
