@@ -28,6 +28,8 @@ HIDE = """
     move-result-object v1
     invoke-interface {v1, p2}, Ljava/util/List;->get(I)Ljava/lang/Object;
     move-result-object v1
+    iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->itemView:Landroid/view/View;
+    invoke-static {v0, v1}, Ldev/kiri/xhsads/FeedInspector;->onBind(Landroid/view/View;Ljava/lang/Object;)V
     invoke-static {v1}, Ldev/kiri/xhsads/FeedAdDetector;->isAd(Ljava/lang/Object;)Z
     move-result v1
 
@@ -93,6 +95,8 @@ def verify_compiled_feed_patch(apk: Path) -> dict:
         position += dex._instruction_width(units, position)
     helper_call = (HELPER, "apply", "(Landroid/view/View;Z)V")
     detector_call = ("Ldev/kiri/xhsads/FeedAdDetector;", "isAd", "(Ljava/lang/Object;)Z")
+    inspector_call = ("Ldev/kiri/xhsads/FeedInspector;", "onBind",
+                      "(Landroid/view/View;Ljava/lang/Object;)V")
     parent_call = ("Lcom/drakeet/multitype/MultiTypeAdapter;", "onBindViewHolder", PROTO)
     helper_positions = [i for i, (_, method) in enumerate(calls) if method == helper_call]
     super_positions = [i for i, (op, method) in enumerate(calls) if op in (0x6f, 0x75) and method == parent_call]
@@ -103,8 +107,11 @@ def verify_compiled_feed_patch(apk: Path) -> dict:
     detector_positions = [i for i, (_, method) in enumerate(calls) if method == detector_call]
     if len(detector_positions) != 1:
         raise ValueError("Compiled feed hook must call FeedAdDetector exactly once")
-    if not super_positions[0] < detector_positions[0] < helper_positions[1]:
-        raise ValueError("Compiled ad detection must run after the bind and before the hide")
+    inspector_positions = [i for i, (_, method) in enumerate(calls) if method == inspector_call]
+    if len(inspector_positions) != 1:
+        raise ValueError("Compiled feed hook must call FeedInspector exactly once")
+    if not super_positions[0] < inspector_positions[0] < detector_positions[0] < helper_positions[1]:
+        raise ValueError("Compiled bind/inspect/detect/hide order is incorrect")
     return {"verified": True, "dex": "classes19.dex", "adapter": ADAPTER,
             "originalBindRetained": True, "restoreBindHideOrder": True,
-            "adDetectorCall": True}
+            "adDetectorCall": True, "debugInspectorCall": True}

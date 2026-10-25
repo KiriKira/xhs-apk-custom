@@ -604,29 +604,40 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 /** Settings page reached from "小K书设置" in the settings list. */
 public final class BlockWordsActivity extends Activity {
+    private static final String KEY_DEBUG = "debug_inspect";
+    private static final String KEY_DUMP = "debug_dump";
+    private static final String KEY_RECENT = "debug_recent";
+
     private EditText input;
     private TextView diagnostics;
+    private TextView captureLog;
+    private Button debugToggle;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         setTitle("小K书设置");
 
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(Color.WHITE);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int padding = dp(16);
         root.setPadding(padding, padding, padding, padding);
-        root.setBackgroundColor(Color.WHITE);
+        scroll.addView(root, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView hint = new TextView(this);
         hint.setText("每行一个屏蔽词（也支持逗号、顿号分隔）。\n"
-                + "信息流卡片的标题、正文或作者名命中任意一个词时，整张卡片会被隐藏。\n"
-                + "匹配不区分大小写，点赞/浏览计数不参与匹配。");
+                + "只有笔记标题命中任意一个词时，整张卡片才会被隐藏。\n"
+                + "匹配不区分大小写，正文、作者、标签和点赞数都不参与。");
         hint.setTextSize(13f);
         hint.setTextColor(Color.rgb(0x40, 0x40, 0x40));
         hint.setBackgroundColor(Color.rgb(0xF2, 0xF2, 0xF2));
@@ -638,9 +649,26 @@ public final class BlockWordsActivity extends Activity {
         diagnostics = new TextView(this);
         diagnostics.setTextSize(11f);
         diagnostics.setTextColor(Color.rgb(0x80, 0x80, 0x80));
-        diagnostics.setPadding(0, dp(8), 0, 0);
+        diagnostics.setPadding(0, dp(8), 0, dp(8));
         diagnostics.setText(BlockSettings.diagnostics(this));
         root.addView(diagnostics, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        debugToggle = new Button(this);
+        debugToggle.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                boolean next = !BlockSettings.prefs(BlockWordsActivity.this)
+                        .getBoolean(KEY_DEBUG, false);
+                BlockSettings.prefs(BlockWordsActivity.this)
+                        .edit().putBoolean(KEY_DEBUG, next).apply();
+                refreshDebug();
+                Toast.makeText(BlockWordsActivity.this,
+                        next ? "已开启卡片抓取：信息流里长按任意卡片" : "已关闭卡片抓取",
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+        root.addView(debugToggle, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         input = new EditText(this);
@@ -651,9 +679,9 @@ public final class BlockWordsActivity extends Activity {
         input.setHint("例如：日本签证\n买一送一");
         input.setText(BlockSettings.raw(this));
         LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        inputParams.topMargin = dp(10);
-        inputParams.bottomMargin = dp(10);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(170));
+        inputParams.topMargin = dp(8);
+        inputParams.bottomMargin = dp(8);
         root.addView(input, inputParams);
 
         LinearLayout buttons = new LinearLayout(this);
@@ -686,16 +714,42 @@ public final class BlockWordsActivity extends Activity {
         buttons.addView(save, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+        Button clearLog = new Button(this);
+        clearLog.setText("清空抓取");
+        clearLog.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                BlockSettings.prefs(BlockWordsActivity.this).edit()
+                        .remove(KEY_DUMP).remove(KEY_RECENT).apply();
+                refreshDebug();
+            }
+        });
+        buttons.addView(clearLog, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
         root.addView(buttons, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        setContentView(root);
+        captureLog = new TextView(this);
+        captureLog.setTextSize(10f);
+        captureLog.setTextColor(Color.rgb(0x33, 0x33, 0x33));
+        captureLog.setBackgroundColor(Color.rgb(0xF7, 0xF7, 0xF7));
+        captureLog.setPadding(dp(8), dp(8), dp(8), dp(8));
+        captureLog.setTextIsSelectable(true);
+        LinearLayout.LayoutParams logParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        logParams.topMargin = dp(8);
+        root.addView(captureLog, logParams);
+
+        setContentView(scroll);
+        refreshDebug();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         refreshDiagnostics();
+        refreshDebug();
     }
 
     /** Leaving the page keeps whatever is typed, so a missed 保存 tap cannot lose the list. */
@@ -715,6 +769,28 @@ public final class BlockWordsActivity extends Activity {
         try {
             if (diagnostics != null) {
                 diagnostics.setText(BlockSettings.diagnostics(this));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void refreshDebug() {
+        try {
+            boolean enabled = BlockSettings.prefs(this).getBoolean(KEY_DEBUG, false);
+            if (debugToggle != null) {
+                debugToggle.setText(enabled
+                        ? "卡片抓取：已开启（去信息流长按卡片）"
+                        : "卡片抓取：已关闭（点此开启）");
+            }
+            if (captureLog != null) {
+                String dump = BlockSettings.prefs(this).getString(KEY_DUMP, "");
+                String recent = BlockSettings.prefs(this).getString(KEY_RECENT, "");
+                StringBuilder builder = new StringBuilder();
+                builder.append("=== 长按抓取的卡片 ===\n")
+                        .append(dump == null || dump.length() == 0 ? "(还没有)" : dump)
+                        .append("\n=== 最近绑定的卡片 ===\n")
+                        .append(recent == null || recent.length() == 0 ? "(还没有)" : recent);
+                captureLog.setText(builder.toString());
             }
         } catch (Throwable ignored) {
         }

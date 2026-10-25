@@ -98,3 +98,20 @@ empty; a non-zero count with no hit and a sample text that lacks the keyword mea
 the card.
 
 The page also saves on `onPause`, so a typed list is persisted even when `保存` is not tapped.
+
+## Card capture (debug switch)
+
+`小K书设置` has a `卡片抓取` toggle backed by the `debug_inspect` preference. It is off by default and
+costs one cached preference read per bind when off. While it is on:
+
+- every bound card appends one line to `debug_recent` (item class, title, `isAd`, `isShowAdTips`,
+  `isBrand`, and `adsInfo` id/type/showTag), newest first, capped at 40 lines;
+- long-pressing any feed card replaces its long-press action with a full dump into `debug_dump`: the
+  item class, its primitive/`String` fields, list sizes, and the nested `adsInfo` fields, capped at
+  4000 characters — this is what identifies the marker on a card that keeps showing;
+- the page renders both under `=== 长按抓取的卡片 ===` and `=== 最近绑定的卡片 ===`, selectable text,
+  with a `清空抓取` button.
+
+An empty `最近绑定的卡片` section after scrolling the feed means the bind hook never ran for that
+pipeline, which is the case the capture exists to rule out. Both the inspector (`classes23.dex`, part
+of the ad helper) and the page (`classes24.dex`) use the same `kiri_xhs_block_words` preference file.
