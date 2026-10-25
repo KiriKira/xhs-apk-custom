@@ -69,7 +69,7 @@ FEED_APPLY_BLOCK_KEYWORDS = (
     "    :rednote_feed_ad_apply\n"
     "    iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->"
     "itemView:Landroid/view/View;\n"
-    "    if-eqz v1, :rednote_feed_keyword_done\n"
+    "    if-nez v1, :rednote_feed_keyword_done\n"
     "    invoke-static {v0}, Ldev/kiri/xhsads/FeedKeywordFilter;->"
     "matches(Landroid/view/View;)Z\n"
     "    move-result v1\n"
@@ -1226,6 +1226,8 @@ def patch_feed_keyword_filter(smali_path: Path) -> dict:
     if text.count(FEED_APPLY_BLOCK) != 1:
         raise ValueError("Expected exactly one compiled feed display hook to extend")
     patched = text.replace(FEED_APPLY_BLOCK, FEED_APPLY_BLOCK_KEYWORDS, 1)
+    if "if-eqz v1, :rednote_feed_keyword_done" in patched:
+        raise ValueError("Keyword filter must be skipped for ads, not for regular cards")
     smali_path.write_text(patched)
     return {
         "hookPoint": "FeedCustomMultiTypeAdapter.onBindViewHolder (post-bind display hook)",

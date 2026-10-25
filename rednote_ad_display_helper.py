@@ -192,14 +192,17 @@ import java.util.List;
 
 /**
  * Debug-only card inspector. While the switch in "小K书设置" is on, every bound card is summarised into
- * a rotating log and long-pressing a card stores a full field dump of its bound item.
+ * a rotating log, and any card that does not look like a plain note (or that carries an ad marker) also
+ * gets a full field dump, so nothing has to be long-pressed on the device.
  */
 public final class FeedInspector {
     private static final String PREFS = "kiri_xhs_block_words";
     private static final String KEY_ENABLED = "debug_inspect";
     private static final String KEY_DUMP = "debug_dump";
     private static final String KEY_RECENT = "debug_recent";
+    private static final String NOTE_ITEM = "com.xingin.entities.NoteItemBean";
     private static final int MAX_RECENT_LINES = 40;
+    private static final int MAX_DUMP_LINES = 120;
     private static final int MAX_DEPTH = 2;
 
     private static long checkedAt;
@@ -213,12 +216,18 @@ public final class FeedInspector {
             if (root == null || item == null || !enabled(root.getContext())) {
                 return;
             }
-            store(root.getContext(), KEY_RECENT, summary(item), MAX_RECENT_LINES);
+            Context context = root.getContext();
+            String adapter = adapterName(root);
+            store(context, KEY_RECENT, summary(item, adapter), MAX_RECENT_LINES);
+            if (interesting(item)) {
+                store(context, KEY_DUMP, "[" + adapter + "] " + describe(item), MAX_DUMP_LINES);
+            }
             root.setOnLongClickListener(new android.view.View.OnLongClickListener() {
                 @Override
                 public boolean onLongClick(android.view.View view) {
                     try {
-                        store(view.getContext(), KEY_DUMP, describe(item), 200);
+                        store(view.getContext(), KEY_DUMP,
+                                "[长按] " + describe(item), MAX_DUMP_LINES);
                         android.widget.Toast.makeText(view.getContext().getApplicationContext(),
                                 "小K书：已抓取卡片信息，去「小K书设置」查看",
                                 android.widget.Toast.LENGTH_SHORT).show();
@@ -267,11 +276,53 @@ public final class FeedInspector {
         }
     }
 
+    /** Cards worth a full dump: anything that is not a plain note item or that carries an ad marker. */
+    private static boolean interesting(Object item) {
+        try {
+            String type = item.getClass().getName();
+            if (!NOTE_ITEM.equals(type)) {
+                return true;
+            }
+            if (truthy(value(item, "isAd")) || truthy(value(item, "isShowAdTips"))
+                    || truthy(value(item, "isBrand"))) {
+                return true;
+            }
+            return payload(value(item, "adsInfo"));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static boolean payload(Object adsInfo) {
+        if (adsInfo == null) {
+            return false;
+        }
+        try {
+            if (truthy(value(adsInfo, "showTag"))) {
+                return true;
+            }
+            String[] names = {"id", "trackId", "adsType", "bizType", "adId", "creativeId"};
+            for (int index = 0; index < names.length; index++) {
+                Object current = value(adsInfo, names[index]);
+                if (current instanceof String && ((String) current).trim().length() > 0) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private static boolean truthy(Object value) {
+        return value instanceof Boolean && ((Boolean) value).booleanValue();
+    }
+
     /** One-line entry for the rotating log. */
-    private static String summary(Object item) {
+    private static String summary(Object item, String adapter) {
         StringBuilder builder = new StringBuilder();
         try {
-            builder.append(item.getClass().getName()).append(" | ");
+            builder.append(adapter).append(" | ");
+            builder.append(simple(item.getClass().getName())).append(" | ");
             String title = text(value(item, "displayTitle"));
             if (title.length() == 0) {
                 title = text(value(item, "title"));
@@ -292,11 +343,11 @@ public final class FeedInspector {
         return builder.toString();
     }
 
-    /** Multi-line dump used when a card is long-pressed on purpose. */
+    /** Multi-line dump of the item and its first nested ad object. */
     private static String describe(Object item) {
         StringBuilder builder = new StringBuilder();
         try {
-            builder.append("item: ").append(item.getClass().getName()).append('\n');
+            builder.append("adapter/item: ").append(item.getClass().getName()).append('\n');
             dumpFields(item, builder, 0, "  ");
         } catch (Throwable ignored) {
         }
@@ -304,7 +355,7 @@ public final class FeedInspector {
     }
 
     private static void dumpFields(Object target, StringBuilder out, int depth, String indent) {
-        if (target == null || depth > MAX_DEPTH || out.length() > 4000) {
+        if (target == null || depth > MAX_DEPTH || out.length() > 3000) {
             return;
         }
         Class<?> type = target.getClass();
@@ -345,7 +396,7 @@ public final class FeedInspector {
                                 }
                             }
                         }
-                    } else if (name.startsWith("adsInfo") || name.startsWith("adInfo")
+                    } else if (name.toLowerCase(java.util.Locale.ROOT).contains("ad")
                             || name.equals("noteTradeInfo")) {
                         out.append(indent).append(name).append(": ")
                                 .append(current.getClass().getName()).append('\n');
@@ -356,6 +407,28 @@ public final class FeedInspector {
             }
             type = type.getSuperclass();
         }
+    }
+
+    /** Name of the adapter that owns this card, which tells us which feed pipeline is in use. */
+    private static String adapterName(android.view.View root) {
+        try {
+            Object current = root;
+            for (int level = 0; level < 24 && current != null; level++) {
+                if ("androidx.recyclerview.widget.RecyclerView".equals(current.getClass().getName())) {
+                    Object adapter = current.getClass().getMethod("getAdapter").invoke(current);
+                    return adapter == null ? "no-adapter" : simple(adapter.getClass().getName());
+                }
+                Object parent = ((android.view.View) current).getParent();
+                current = parent;
+            }
+        } catch (Throwable ignored) {
+        }
+        return "?";
+    }
+
+    private static String simple(String name) {
+        int dot = name.lastIndexOf('.');
+        return dot < 0 ? name : name.substring(dot + 1);
     }
 
     private static Object value(Object target, String name) {

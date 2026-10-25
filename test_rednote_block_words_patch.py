@@ -77,6 +77,12 @@ class FeedKeywordHookTests(unittest.TestCase):
         )
         self.assertTrue(audit["sameDisplayStateAsAdPatch"])
 
+    def test_keyword_check_is_skipped_for_ads_only(self):
+        module.patch_feed_keyword_filter(self.path)
+        patched = self.path.read_text()
+        self.assertIn("if-nez v1, :rednote_feed_keyword_done", patched)
+        self.assertNotIn("if-eqz v1, :rednote_feed_keyword_done", patched)
+
     def test_rejects_second_insertion(self):
         module.patch_feed_keyword_filter(self.path)
         first = self.path.read_text()
