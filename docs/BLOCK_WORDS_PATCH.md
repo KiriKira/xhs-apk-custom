@@ -50,10 +50,12 @@ the original bind and calls `Ldev/kiri/xhsads/FeedKeywordFilter;->matches(Landro
 result is OR-ed with the ad flag before `FeedAdDisplay.apply`, so a keyword hit gets the same
 `View.GONE` + zero-height state, and recycling restores the original visibility/height.
 
-Matching operates on the text of the card's own `TextView`s, so it needs no obfuscated entity field
-and behaves the same for every card type. Text is lower-cased for comparison; strings that look like
-counters (digits plus `万/w/k/m/+`, e.g. `1.2万`) are ignored so numeric keywords do not match like
-counts. Author names and the card body that the feed actually renders are included.
+Matching operates on the note **title only**. The filter resolves the bound adapter item through the
+card's `RecyclerView` child position and reads its `displayTitle`, falling back to `title` when the
+display title is empty. Body text, author names, tags and engagement counters never take part, so a
+keyword that happens to appear only in the note body does not hide the card. Separators (space,
+`-`, `_`, `/`, `·`, ideographic space) are ignored on both sides and the comparison is
+case-insensitive.
 
 ## Scope and limits
 
@@ -88,7 +90,7 @@ The filter reports what it actually did, so a device report can be judged withou
 
 - `BlockSettings.record()` shows a Toast for the first three bound cards of each process (`小K书诊断 #1：词 1 个`) and for the first three hits, then stays quiet.
 - The `小K书设置` page prints `已保存 N 个屏蔽词`, `已检查卡片 X 张，命中 Y 张`, and the last card's visible text (first 300 characters).
-- The card text is the card's own `TextView` text plus the `String` fields of the bound adapter item plus the root's content description; separators (space, `-`, `_`, `/`, `·`, ideographic space) are ignored on both sides of the comparison, and like/view counters such as `1.2万` never take part.
+- The sample text is the title the filter compared against (`displayTitle`, else `title`); separators (space, `-`, `_`, `/`, `·`, ideographic space) are ignored on both sides, and body text/authors/tags/counters never enter the comparison.
 
 Zero checked cards means the bind hook never ran for that feed pipeline (see
 `FEED_AD_DISPLAY_PATCH.md`: two feed implementations exist in 9.48.1), not that the keyword list is

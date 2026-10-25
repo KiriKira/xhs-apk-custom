@@ -289,45 +289,43 @@ public final class BlockSettings {
     "FeedKeywordFilter.java": r"""package dev.kiri.xhsads;
 
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.TextView;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.List;
 
 /**
- * Decides whether an already-bound feed card matches a blocked keyword. Two sources are used: the
- * text of the card's own TextViews, and the String fields of the bound adapter item, so a card whose
- * title never reaches a TextView can still be matched.
+ * Decides whether an already-bound feed card matches a blocked keyword. Only the note title counts:
+ * the item's displayed title (or its raw title when no display title is set). Body text, author names,
+ * tags and engagement counters are ignored on purpose.
  */
 public final class FeedKeywordFilter {
-    private static final int MAX_DEPTH = 16;
     private static final String RECYCLER_CLASS = "androidx.recyclerview.widget.RecyclerView";
+    private static final String[] TITLE_FIELDS = {"displayTitle", "title"};
 
     private FeedKeywordFilter() {
     }
 
     public static boolean matches(View root) {
         boolean hit = false;
-        String text = "";
+        String title = "";
         try {
             if (root == null) {
                 return false;
             }
             String[] words = BlockSettings.words(root.getContext());
-            text = snapshot(root);
-            if (words.length > 0 && text.length() > 0) {
-                hit = containsAny(text, words);
+            title = titleOf(root);
+            if (words.length > 0 && title.length() > 0) {
+                hit = containsAny(title, words);
             }
-            BlockSettings.record(root.getContext(), text, hit, words.length);
+            BlockSettings.record(root.getContext(), title, hit, words.length);
         } catch (Throwable ignored) {
         }
         return hit;
     }
 
-    private static boolean containsAny(String haystack, String[] words) {
-        String lower = haystack.toLowerCase(java.util.Locale.ROOT);
+    private static boolean containsAny(String title, String[] words) {
+        String lower = title.toLowerCase(java.util.Locale.ROOT);
         String compact = compact(lower);
         for (int index = 0; index < words.length; index++) {
             String needle = words[index].toLowerCase(java.util.Locale.ROOT);
@@ -359,75 +357,54 @@ public final class FeedKeywordFilter {
         return builder.toString();
     }
 
-    private static String snapshot(View root) {
-        StringBuilder builder = new StringBuilder();
+    /** Reads the bound item's title; the card's other text never reaches the comparison. */
+    private static String titleOf(View root) {
         try {
-            builder.append(collectViews(root, 0));
+            Object item = itemOf(root);
+            if (item == null) {
+                return "";
+            }
+            for (int index = 0; index < TITLE_FIELDS.length; index++) {
+                Object value = value(item, TITLE_FIELDS[index]);
+                if (value instanceof String) {
+                    String title = ((String) value).trim();
+                    if (title.length() > 0) {
+                        return title;
+                    }
+                }
+            }
         } catch (Throwable ignored) {
         }
-        try {
-            builder.append('\n').append(collectItem(root));
-        } catch (Throwable ignored) {
-        }
-        try {
-            CharSequence description = root.getContentDescription();
-            builder.append('\n').append(description == null ? "" : description.toString());
-        } catch (Throwable ignored) {
-        }
-        return builder.toString();
+        return "";
     }
 
-    private static String collectViews(View view, int depth) {
-        if (view == null || depth > MAX_DEPTH) {
-            return "";
-        }
-        StringBuilder builder = new StringBuilder();
-        if (view instanceof TextView) {
-            CharSequence text = ((TextView) view).getText();
-            String value = text == null ? "" : text.toString().trim();
-            if (value.length() > 0 && !isCounter(value)) {
-                builder.append(value).append('\n');
-            }
-        }
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            int count = group.getChildCount();
-            for (int index = 0; index < count; index++) {
-                builder.append(collectViews(group.getChildAt(index), depth + 1));
-            }
-        }
-        return builder.toString();
-    }
-
-    private static String collectItem(View root) {
+    private static Object itemOf(View root) {
         try {
             Object recycler = findRecycler(root);
             if (recycler == null) {
-                return "";
+                return null;
             }
             Object holder = Class.forName(RECYCLER_CLASS)
                     .getMethod("getChildViewHolder", View.class)
                     .invoke(null, root);
             if (holder == null) {
-                return "";
+                return null;
             }
             int position = position(holder);
             if (position < 0) {
-                return "";
+                return null;
             }
             Object adapter = recycler.getClass().getMethod("getAdapter").invoke(recycler);
             if (adapter == null) {
-                return "";
+                return null;
             }
             List<?> items = items(adapter);
             if (items == null || position >= items.size()) {
-                return "";
+                return null;
             }
-            StringBuilder builder = new StringBuilder();
-            collectStrings(items.get(position), builder, 2, 0);
-            return builder.toString();
+            return items.get(position);
         } catch (Throwable ignored) {
-            return "";
+            return null;
         }
     }
 
@@ -483,80 +460,24 @@ public final class FeedKeywordFilter {
         return null;
     }
 
-    private static void collectStrings(Object item, StringBuilder out, int depth, int level) {
-        if (item == null || out.length() > 900 || level > depth) {
-            return;
-        }
-        if (item instanceof String) {
-            String value = ((String) item).trim();
-            if (value.length() > 0 && !isCounter(value)) {
-                out.append(value).append('\n');
-            }
-            return;
-        }
-        if (item instanceof List) {
-            List<?> list = (List<?>) item;
-            int count = Math.min(list.size(), 12);
-            for (int index = 0; index < count; index++) {
-                collectStrings(list.get(index), out, depth, level + 1);
-            }
-            return;
-        }
-        String type = item.getClass().getName();
-        if (!type.startsWith("com.xingin") && !type.startsWith("java.lang")) {
-            return;
-        }
-        Class<?> current = item.getClass();
-        for (int step = 0; step < 3 && current != null && current != Object.class; step++) {
-            Field[] fields;
+    private static Object value(Object item, String name) {
+        Class<?> type = item.getClass();
+        for (int level = 0; level < 6 && type != null && type != Object.class; level++) {
+            Field field;
             try {
-                fields = current.getDeclaredFields();
+                field = type.getDeclaredField(name);
             } catch (Throwable ignored) {
-                break;
-            }
-            for (int index = 0; index < fields.length; index++) {
-                Field field = fields[index];
-                try {
-                    if (field.getType().isPrimitive()) {
-                        continue;
-                    }
-                    field.setAccessible(true);
-                    Object value = field.get(item);
-                    if (value == null || value == item) {
-                        continue;
-                    }
-                    if (value instanceof String) {
-                        collectStrings(value, out, depth, level);
-                    } else if (level < depth) {
-                        collectStrings(value, out, depth, level + 1);
-                    }
-                } catch (Throwable ignored) {
-                }
-            }
-            current = current.getSuperclass();
-        }
-    }
-
-    /** Skip like/view counters such as "1.2万" or "3,215" so numeric keywords stay usable. */
-    private static boolean isCounter(String value) {
-        if (value.length() == 0) {
-            return true;
-        }
-        boolean hasUnit = false;
-        for (int index = 0; index < value.length(); index++) {
-            char current = value.charAt(index);
-            if (Character.isDigit(current) || current == ' ' || current == '.' || current == ','
-                    || current == '+' || current == ':') {
+                type = type.getSuperclass();
                 continue;
             }
-            if (current == '万' || current == 'w' || current == 'W' || current == 'k'
-                    || current == 'K' || current == 'm' || current == 'M') {
-                hasUnit = true;
-                continue;
+            try {
+                field.setAccessible(true);
+                return field.get(item);
+            } catch (Throwable ignored) {
+                return null;
             }
-            return false;
         }
-        return hasUnit || value.length() <= 6;
+        return null;
     }
 }
 """,
