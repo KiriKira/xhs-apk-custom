@@ -14,10 +14,19 @@ The patch inserts two display-only hooks around the original superclass bind:
 
 1. Restore the root's previous visibility and height if this helper hid it earlier.
 2. Execute the original binding code, including its original presenter/image-loading calls.
-3. Inspect the bound item: `NoteItemBean`, `MediaBean`, or `NativeMediaBean` must have `isAd=true`; a dedicated `AdsInfo` item also qualifies. Other item types retain their existing display state.
+3. Inspect the bound item with `FeedAdDetector.isAd(item)`: `isAd=true` or `isShowAdTips=true` on a `com.xingin.entities` bean, a populated `adsInfo` (non-empty `id`/`trackId`/`adsType`/`bizType`, or `showTag=true`), a dedicated `AdsInfo` item, or any `com.xingin.advert.*` item. `isBrand` notes stay visible, and an empty `adsInfo` object never counts on its own. Other item types retain their existing display state.
 4. For an ad, set the root to `View.GONE` and set its layout height to zero. Save its original state in a weak map so recycled holders can bind ordinary cards with their correct new dimensions.
 
 The patch retains feed items, response parsing, requests, and the original bind. It does not forge advertisement impressions. Actual visibility-based impression reporting can naturally change when a card is hidden. This experiment covers this discovery/home-feed adapter; search, detail pages, splash screens, and other ad surfaces are outside its scope.
+
+## Which discovery feed implements the bind in 9.48.1
+
+Two feed pipelines exist in this build and they do not share a bind method:
+
+- `ExploreFeedPageConfigProvider.createFragment()` (classes19) returns `SmoothExploreFragmentV2`; its `O5()` walks `m` (n97 node) -> `clc.j` controller -> `clc.z` presenter -> a tab fragment implementing `tjc.k`, so the tab container itself renders no cards.
+- The card pipeline used by this patch is `ExplorePageAdapter` (homewards viewpager) -> `ExploreRecommendFragment` -> `BaseExploreFragment` -> `qkc.m0`, which owns `FeedCustomMultiTypeAdapter` and calls `FeedRecyclerView.setAdapter(...)`; the note binders registered on it are `fkc.a`/`fkc.b` and the ad binders (`ImageAdsViewBinder`, `NativeVideoAdsBinder`, `UnitedDeliveryBinder` for `AdsInfo`).
+
+Static analysis cannot settle which of the two a given account is served, and both the ad patch and the keyword filter hang off the `FeedCustomMultiTypeAdapter` bind. The build therefore ships on-device diagnostics (see `BLOCK_WORDS_PATCH.md`): a Toast for the first three bound cards per process plus counters on the settings page. A zero count means that pipeline is not in use and the patch has to move to the smooth container's card rendering.
 
 ## Layout after hiding
 
@@ -39,7 +48,7 @@ they did not measure a live server-delivered advertisement in the full feed.
 
 ## Validation
 
-`test_rednote_ad_patch.py` uses the original pinned bind method as a fixture. It verifies that all original code is retained, the bind is executed once between the two hooks, and a changed or duplicated method fails without partially applying the patch. The builder also inspects compiled `classes19.dex` for restore/bind/hide ordering and all four item predicates; all other merged payloads are audited.
+`test_rednote_ad_patch.py` uses the original pinned bind method as a fixture. It verifies that all original code is retained, the bind is executed once between the two hooks, and a changed or duplicated method fails without partially applying the patch. The builder also inspects compiled `classes19.dex` for restore/bind/hide ordering and the single `FeedAdDetector` call between the bind and the hide; all other merged payloads are audited.
 
 The ARM Waydroid workflow's `fold-compat-hide-ads` variant loads the helper from the actual output APK and tests ad visibility/height, repeated hiding, holder restoration, ordinary cards that were already hidden, null layout parameters, and null views. A separate once-only phone flow ends at the SMS-code page; no OTP input is requested or submitted. A helper smoke test verifies the display state but does not itself establish that a live server-delivered ad was observed and hidden.
 

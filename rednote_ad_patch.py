@@ -28,28 +28,8 @@ HIDE = """
     move-result-object v1
     invoke-interface {v1, p2}, Ljava/util/List;->get(I)Ljava/lang/Object;
     move-result-object v1
-    instance-of v2, v1, Lcom/xingin/entities/NoteItemBean;
-    if-eqz v2, :rednote_feed_ad_other
-    check-cast v1, Lcom/xingin/entities/NoteItemBean;
-    iget-boolean v1, v1, Lcom/xingin/entities/NoteItemBean;->isAd:Z
-    goto :rednote_feed_ad_apply
-
-    :rednote_feed_ad_other
-    instance-of v2, v1, Lcom/xingin/entities/explorefeed/MediaBean;
-    if-eqz v2, :rednote_feed_ad_native
-    check-cast v1, Lcom/xingin/entities/explorefeed/MediaBean;
-    iget-boolean v1, v1, Lcom/xingin/entities/explorefeed/MediaBean;->isAd:Z
-    goto :rednote_feed_ad_apply
-
-    :rednote_feed_ad_native
-    instance-of v2, v1, Lcom/xingin/entities/NativeMediaBean;
-    if-eqz v2, :rednote_feed_ad_special
-    check-cast v1, Lcom/xingin/entities/NativeMediaBean;
-    iget-boolean v1, v1, Lcom/xingin/entities/NativeMediaBean;->isAd:Z
-    goto :rednote_feed_ad_apply
-
-    :rednote_feed_ad_special
-    instance-of v1, v1, Lcom/xingin/entities/ad/AdsInfo;
+    invoke-static {v1}, Ldev/kiri/xhsads/FeedAdDetector;->isAd(Ljava/lang/Object;)Z
+    move-result v1
 
     :rednote_feed_ad_apply
     iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->itemView:Landroid/view/View;
@@ -78,7 +58,7 @@ def patch_feed_bind(smali_path: Path) -> dict:
         "originalBindPreserved": True,
         "restoreBeforeBind": True,
         "hideAfterBind": True,
-        "predicate": "NoteItemBean/MediaBean/NativeMediaBean.isAd (JSON is_ads), or the dedicated AdsInfo item type",
+        "predicate": "FeedAdDetector reads isAd/isShowAdTips/adsInfo by name on com.xingin.entities items, and treats AdsInfo items and com.xingin.advert.* items as ads",
         "scope": "Discovery/home feed cards using FeedCustomMultiTypeAdapter; requests and feed items are unchanged",
     }
 
@@ -112,6 +92,7 @@ def verify_compiled_feed_patch(apk: Path) -> dict:
             types.append(dex.type_descriptor(units[position + 1]))
         position += dex._instruction_width(units, position)
     helper_call = (HELPER, "apply", "(Landroid/view/View;Z)V")
+    detector_call = ("Ldev/kiri/xhsads/FeedAdDetector;", "isAd", "(Ljava/lang/Object;)Z")
     parent_call = ("Lcom/drakeet/multitype/MultiTypeAdapter;", "onBindViewHolder", PROTO)
     helper_positions = [i for i, (_, method) in enumerate(calls) if method == helper_call]
     super_positions = [i for i, (op, method) in enumerate(calls) if op in (0x6f, 0x75) and method == parent_call]
@@ -119,12 +100,11 @@ def verify_compiled_feed_patch(apk: Path) -> dict:
         raise ValueError("Compiled feed hook must have two helper calls and one original superclass bind")
     if not helper_positions[0] < super_positions[0] < helper_positions[1]:
         raise ValueError("Compiled restore/bind/hide order is incorrect")
-    model_types = {"Lcom/xingin/entities/NoteItemBean;", "Lcom/xingin/entities/explorefeed/MediaBean;",
-                   "Lcom/xingin/entities/NativeMediaBean;"}
-    if not {(model, "isAd", "Z") for model in model_types} <= set(fields):
-        raise ValueError("Compiled note/media ad predicates missing")
-    if not model_types | {"Lcom/xingin/entities/ad/AdsInfo;"} <= set(types):
-        raise ValueError("Compiled ad item type predicates missing")
+    detector_positions = [i for i, (_, method) in enumerate(calls) if method == detector_call]
+    if len(detector_positions) != 1:
+        raise ValueError("Compiled feed hook must call FeedAdDetector exactly once")
+    if not super_positions[0] < detector_positions[0] < helper_positions[1]:
+        raise ValueError("Compiled ad detection must run after the bind and before the hide")
     return {"verified": True, "dex": "classes19.dex", "adapter": ADAPTER,
             "originalBindRetained": True, "restoreBindHideOrder": True,
-            "noteIsAdAndAdsInfoPredicates": True}
+            "adDetectorCall": True}

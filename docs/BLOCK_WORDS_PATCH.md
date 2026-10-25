@@ -81,3 +81,18 @@ hash.
 
 Live behavior in the feed and the settings row were not observed on a device as part of this patch;
 the checks above are static plus helper-level.
+
+## On-device diagnostics
+
+The filter reports what it actually did, so a device report can be judged without logcat access:
+
+- `BlockSettings.record()` shows a Toast for the first three bound cards of each process (`小K书诊断 #1：词 1 个`) and for the first three hits, then stays quiet.
+- The `小K书设置` page prints `已保存 N 个屏蔽词`, `已检查卡片 X 张，命中 Y 张`, and the last card's visible text (first 300 characters).
+- The card text is the card's own `TextView` text plus the `String` fields of the bound adapter item plus the root's content description; separators (space, `-`, `_`, `/`, `·`, ideographic space) are ignored on both sides of the comparison, and like/view counters such as `1.2万` never take part.
+
+Zero checked cards means the bind hook never ran for that feed pipeline (see
+`FEED_AD_DISPLAY_PATCH.md`: two feed implementations exist in 9.48.1), not that the keyword list is
+empty; a non-zero count with no hit and a sample text that lacks the keyword means the text is not on
+the card.
+
+The page also saves on `onPause`, so a typed list is persisted even when `保存` is not tapped.

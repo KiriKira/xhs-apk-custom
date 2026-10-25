@@ -8,7 +8,8 @@ from pathlib import Path
 from rednote_signature_compat import _resolve_android_jar, _resolve_d8, _run
 
 
-JAVA_SOURCE = r'''package dev.kiri.xhsads;
+JAVA_SOURCES = {}
+JAVA_SOURCES["FeedAdDisplay.java"] = r'''package dev.kiri.xhsads;
 
 import android.view.View;
 import android.view.ViewGroup;
@@ -88,6 +89,99 @@ public final class FeedAdDisplay {
 '''
 
 
+JAVA_SOURCES["FeedAdDetector.java"] = r'''package dev.kiri.xhsads;
+
+import java.lang.reflect.Field;
+
+/**
+ * Decides whether a bound discovery-feed item is an advertisement without hard-coding bean fields
+ * from one build: the marker names below are read reflectively and a present-but-empty AdsInfo is
+ * never enough on its own (media beans can carry an empty one).
+ */
+public final class FeedAdDetector {
+    private static final String ADS_INFO = "adsInfo";
+    private static final String[] ADS_INFO_TYPES = {"com.xingin.entities.ad.AdsInfo"};
+    private static final String[] ADS_INFO_TEXT = {"id", "trackId", "adsType", "bizType"};
+
+    private FeedAdDetector() {
+    }
+
+    public static boolean isAd(Object item) {
+        if (item == null) {
+            return false;
+        }
+        try {
+            String type = item.getClass().getName();
+            if (type.startsWith("com.xingin.advert.")) {
+                return true;
+            }
+            for (int index = 0; index < ADS_INFO_TYPES.length; index++) {
+                if (type.equals(ADS_INFO_TYPES[index])) {
+                    return true;
+                }
+            }
+            if (!type.startsWith("com.xingin.entities")) {
+                return false;
+            }
+            if (flag(item, "isAd") || flag(item, "isShowAdTips")) {
+                return true;
+            }
+            if (flag(item, "isBrand")) {
+                return false;
+            }
+            return adsInfoPayload(value(item, ADS_INFO));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** Only a populated AdsInfo means the card really carries an ad payload. */
+    private static boolean adsInfoPayload(Object adsInfo) {
+        if (adsInfo == null) {
+            return false;
+        }
+        try {
+            if (flag(adsInfo, "showTag")) {
+                return true;
+            }
+            for (int index = 0; index < ADS_INFO_TEXT.length; index++) {
+                Object current = value(adsInfo, ADS_INFO_TEXT[index]);
+                if (current instanceof String && ((String) current).trim().length() > 0) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private static boolean flag(Object item, String name) {
+        Object current = value(item, name);
+        return current instanceof Boolean && ((Boolean) current).booleanValue();
+    }
+
+    private static Object value(Object item, String name) {
+        Class<?> type = item.getClass();
+        for (int level = 0; level < 6 && type != null && type != Object.class; level++) {
+            Field field;
+            try {
+                field = type.getDeclaredField(name);
+            } catch (Throwable ignored) {
+                type = type.getSuperclass();
+                continue;
+            }
+            try {
+                field.setAccessible(true);
+                return field.get(item);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+}
+'''
+
 def build_ad_display_dex(work_dir: Path) -> Path:
     """Compile FeedAdDisplay.java into a min-api-21 ``classes.dex`` file."""
     work_dir = Path(work_dir)
@@ -102,8 +196,11 @@ def build_ad_display_dex(work_dir: Path) -> Path:
     classes_dir.mkdir()
     dex_dir.mkdir()
 
-    java_file = source_dir / "FeedAdDisplay.java"
-    java_file.write_text(JAVA_SOURCE, encoding="utf-8", newline="\n")
+    java_files = []
+    for name in sorted(JAVA_SOURCES):
+        java_file = source_dir / name
+        java_file.write_text(JAVA_SOURCES[name], encoding="utf-8", newline="\n")
+        java_files.append(java_file)
 
     android_jar = _resolve_android_jar()
     compiler_args: list[str | Path] = [
@@ -115,7 +212,7 @@ def build_ad_display_dex(work_dir: Path) -> Path:
         android_jar,
         "-d",
         classes_dir,
-        java_file,
+        *java_files,
     ]
     javac = shutil.which("javac")
     if javac:
@@ -128,7 +225,7 @@ def build_ad_display_dex(work_dir: Path) -> Path:
 
     class_files = sorted(classes_dir.rglob("*.class"))
     if not class_files:
-        raise RuntimeError("Java compiler did not produce FeedAdDisplay class files")
+        raise RuntimeError("Java compiler did not produce the ad helper class files")
 
     d8 = _resolve_d8()
     _run(

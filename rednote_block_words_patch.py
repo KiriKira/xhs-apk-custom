@@ -246,6 +246,21 @@ public final class BlockSettings {
                 android.util.Log.i(LOG_TAG, "card#" + seen + " words=" + wordCount
                         + " hit=" + hit + " text=" + text);
             }
+            // Temporary on-device diagnostics: proves from the device whether the feed hook runs.
+            if (seen <= 3) {
+                toast(context, "小K书诊断 #" + seen + "：词 " + wordCount + " 个");
+            }
+            if (hit && hits <= 3) {
+                toast(context, "小K书诊断：命中第 " + hits + " 张卡片");
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void toast(Context context, String text) {
+        try {
+            android.widget.Toast.makeText(context.getApplicationContext(), text,
+                    android.widget.Toast.LENGTH_SHORT).show();
         } catch (Throwable ignored) {
         }
     }
