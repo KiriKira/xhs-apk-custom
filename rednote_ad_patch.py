@@ -28,6 +28,7 @@ HIDE = """
     move-result-object v1
     invoke-interface {v1, p2}, Ljava/util/List;->get(I)Ljava/lang/Object;
     move-result-object v1
+    move-object v2, v1
     iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->itemView:Landroid/view/View;
     invoke-static {v0, v1}, Ldev/kiri/xhsads/FeedInspector;->onBind(Landroid/view/View;Ljava/lang/Object;)V
     invoke-static {v1}, Ldev/kiri/xhsads/FeedAdDetector;->isAd(Ljava/lang/Object;)Z

@@ -412,10 +412,11 @@ public final class FeedInspector {
     /** Name of the adapter that owns this card, which tells us which feed pipeline is in use. */
     private static String adapterName(android.view.View root) {
         try {
+            Class<?> recycler = Class.forName("androidx.recyclerview.widget.RecyclerView");
             Object current = root;
-            for (int level = 0; level < 24 && current != null; level++) {
-                if ("androidx.recyclerview.widget.RecyclerView".equals(current.getClass().getName())) {
-                    Object adapter = current.getClass().getMethod("getAdapter").invoke(current);
+            for (int level = 0; level < 32 && current != null; level++) {
+                if (recycler.isInstance(current)) {
+                    Object adapter = recycler.getMethod("getAdapter").invoke(current);
                     return adapter == null ? "no-adapter" : simple(adapter.getClass().getName());
                 }
                 Object parent = ((android.view.View) current).getParent();

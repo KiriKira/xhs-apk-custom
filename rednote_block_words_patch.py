@@ -70,8 +70,8 @@ FEED_APPLY_BLOCK_KEYWORDS = (
     "    iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->"
     "itemView:Landroid/view/View;\n"
     "    if-nez v1, :rednote_feed_keyword_done\n"
-    "    invoke-static {v0}, Ldev/kiri/xhsads/FeedKeywordFilter;->"
-    "matches(Landroid/view/View;)Z\n"
+    "    invoke-static {v0, v2}, Ldev/kiri/xhsads/FeedKeywordFilter;->"
+    "matches(Landroid/view/View;Ljava/lang/Object;)Z\n"
     "    move-result v1\n"
     "    :rednote_feed_keyword_done\n"
     "    invoke-static {v0, v1}, Ldev/kiri/xhsads/FeedAdDisplay;->"
@@ -291,30 +291,24 @@ public final class BlockSettings {
 import android.view.View;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.util.List;
+import java.util.Locale;
 
 /**
- * Decides whether an already-bound feed card matches a blocked keyword. Only the note title counts:
- * the item's displayed title (or its raw title when no display title is set). Body text, author names,
- * tags and engagement counters are ignored on purpose.
+ * Decides whether an already-bound feed card matches a blocked keyword. The bound item is handed over
+ * by the feed hook, so no view-hierarchy lookup is needed; only the note title is compared.
  */
 public final class FeedKeywordFilter {
-    private static final String RECYCLER_CLASS = "androidx.recyclerview.widget.RecyclerView";
     private static final String[] TITLE_FIELDS = {"displayTitle", "title"};
 
     private FeedKeywordFilter() {
     }
 
-    public static boolean matches(View root) {
+    public static boolean matches(View root, Object item) {
         boolean hit = false;
         String title = "";
         try {
-            if (root == null) {
-                return false;
-            }
             String[] words = BlockSettings.words(root.getContext());
-            title = titleOf(root);
+            title = titleOf(item);
             if (words.length > 0 && title.length() > 0) {
                 hit = containsAny(title, words);
             }
@@ -325,18 +319,18 @@ public final class FeedKeywordFilter {
     }
 
     private static boolean containsAny(String title, String[] words) {
-        String lower = title.toLowerCase(java.util.Locale.ROOT);
-        String compact = compact(lower);
+        String lower = title.toLowerCase(Locale.ROOT);
+        String dense = compact(lower);
         for (int index = 0; index < words.length; index++) {
-            String needle = words[index].toLowerCase(java.util.Locale.ROOT);
+            String needle = words[index].toLowerCase(Locale.ROOT);
             if (needle.length() == 0) {
                 continue;
             }
             if (lower.contains(needle)) {
                 return true;
             }
-            String dense = compact(needle);
-            if (dense.length() > 0 && compact.contains(dense)) {
+            String denseNeedle = compact(needle);
+            if (denseNeedle.length() > 0 && dense.contains(denseNeedle)) {
                 return true;
             }
         }
@@ -357,13 +351,12 @@ public final class FeedKeywordFilter {
         return builder.toString();
     }
 
-    /** Reads the bound item's title; the card's other text never reaches the comparison. */
-    private static String titleOf(View root) {
+    /** The note title only: the displayed title, else the raw title. */
+    private static String titleOf(Object item) {
+        if (item == null) {
+            return "";
+        }
         try {
-            Object item = itemOf(root);
-            if (item == null) {
-                return "";
-            }
             for (int index = 0; index < TITLE_FIELDS.length; index++) {
                 Object value = value(item, TITLE_FIELDS[index]);
                 if (value instanceof String) {
@@ -376,88 +369,6 @@ public final class FeedKeywordFilter {
         } catch (Throwable ignored) {
         }
         return "";
-    }
-
-    private static Object itemOf(View root) {
-        try {
-            Object recycler = findRecycler(root);
-            if (recycler == null) {
-                return null;
-            }
-            Object holder = Class.forName(RECYCLER_CLASS)
-                    .getMethod("getChildViewHolder", View.class)
-                    .invoke(null, root);
-            if (holder == null) {
-                return null;
-            }
-            int position = position(holder);
-            if (position < 0) {
-                return null;
-            }
-            Object adapter = recycler.getClass().getMethod("getAdapter").invoke(recycler);
-            if (adapter == null) {
-                return null;
-            }
-            List<?> items = items(adapter);
-            if (items == null || position >= items.size()) {
-                return null;
-            }
-            return items.get(position);
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private static Object findRecycler(View root) {
-        try {
-            Object current = root;
-            for (int level = 0; level < 24 && current != null; level++) {
-                if (RECYCLER_CLASS.equals(current.getClass().getName())) {
-                    return current;
-                }
-                current = ((View) current).getParent();
-            }
-        } catch (Throwable ignored) {
-        }
-        return null;
-    }
-
-    private static int position(Object holder) {
-        String[] names = {
-            "getBindingAdapterPosition", "getAbsoluteAdapterPosition", "getAdapterPosition"
-        };
-        for (int index = 0; index < names.length; index++) {
-            try {
-                Object value = holder.getClass().getMethod(names[index]).invoke(holder);
-                if (value instanceof Integer) {
-                    int position = ((Integer) value).intValue();
-                    if (position >= 0) {
-                        return position;
-                    }
-                }
-            } catch (Throwable ignored) {
-            }
-        }
-        return -1;
-    }
-
-    private static List<?> items(Object adapter) {
-        try {
-            Method[] methods = adapter.getClass().getMethods();
-            for (int index = 0; index < methods.length; index++) {
-                Method method = methods[index];
-                if (method.getParameterTypes().length != 0
-                        || !List.class.isAssignableFrom(method.getReturnType())) {
-                    continue;
-                }
-                Object value = method.invoke(adapter);
-                if (value instanceof List) {
-                    return (List<?>) value;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        return null;
     }
 
     private static Object value(Object item, String name) {
@@ -1231,7 +1142,7 @@ def patch_feed_keyword_filter(smali_path: Path) -> dict:
     smali_path.write_text(patched)
     return {
         "hookPoint": "FeedCustomMultiTypeAdapter.onBindViewHolder (post-bind display hook)",
-        "keywordCall": "Ldev/kiri/xhsads/FeedKeywordFilter;->matches(Landroid/view/View;)Z",
+        "keywordCall": "Ldev/kiri/xhsads/FeedKeywordFilter;->matches(Landroid/view/View;Ljava/lang/Object;)Z",
         "sameDisplayStateAsAdPatch": True,
     }
 
@@ -1395,7 +1306,8 @@ def verify_compiled_feed_keyword_hook(apk: Path) -> dict:
     ]
     if len(codes) != 1:
         raise ValueError("Expected one compiled feed bind method")
-    keyword_call = ("Ldev/kiri/xhsads/FeedKeywordFilter;", "matches", "(Landroid/view/View;)Z")
+    keyword_call = ("Ldev/kiri/xhsads/FeedKeywordFilter;", "matches",
+                    "(Landroid/view/View;Ljava/lang/Object;)Z")
     apply_call = ("Ldev/kiri/xhsads/FeedAdDisplay;", "apply", "(Landroid/view/View;Z)V")
     calls = _ordered_calls(dex, codes[0])
     keyword_positions = [position for position, method in calls if method == keyword_call]

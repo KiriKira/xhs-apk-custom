@@ -46,13 +46,14 @@ drops empties and de-duplicates.
 ## Filtering
 
 The keyword filter reuses the display hook installed by `--hide-feed-ads`. The inserted code runs after
-the original bind and calls `Ldev/kiri/xhsads/FeedKeywordFilter;->matches(Landroid/view/View;)Z`; the
+the original bind and calls `Ldev/kiri/xhsads/FeedKeywordFilter;->matches(Landroid/view/View;Ljava/lang/Object;)Z` with the bound item the hook already resolved; the
 result is OR-ed with the ad flag before `FeedAdDisplay.apply`, so a keyword hit gets the same
 `View.GONE` + zero-height state, and recycling restores the original visibility/height.
 
-Matching operates on the note **title only**. The filter resolves the bound adapter item through the
-card's `RecyclerView` child position and reads its `displayTitle`, falling back to `title` when the
-display title is empty. Body text, author names, tags and engagement counters never take part, so a
+Matching operates on the note **title only**. The filter reads `displayTitle` from the bound item handed
+over by the smali hook, falling back to `title` when the display title is empty. It deliberately does no
+view-hierarchy lookup: the feed's `RecyclerView` is a subclass, so class-name matching on the parent chain
+silently returns nothing (that bug made every title compare as empty). Body text, author names, tags and engagement counters never take part, so a
 keyword that happens to appear only in the note body does not hide the card. Separators (space,
 `-`, `_`, `/`, `·`, ideographic space) are ignored on both sides and the comparison is
 case-insensitive.
