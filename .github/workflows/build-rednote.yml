@@ -16,6 +16,7 @@ on:
       - "rednote_function_switch_download_patch.py"
       - "rednote_splash_ad_patch.py"
       - "rednote_block_words_patch.py"
+      - "rednote_im_diag_patch.py"
       - "test_build_rednote.py"
       - "test_rednote_signature_compat.py"
       - "test_rednote_ad_patch.py"
@@ -81,6 +82,11 @@ on:
         type: boolean
         required: true
         default: true
+      im_diag:
+        description: Diagnostic build - log fortuna transport callbacks (kiri-im tag). Do not ship.
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -98,6 +104,7 @@ jobs:
       SKIP_SPLASH_ADS: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_splash_ads }}
       ALLOW_DISABLED_DOWNLOADS: ${{ github.event_name != 'workflow_dispatch' || inputs.allow_disabled_downloads }}
       WECHAT_SHARE_IDENTITY: ${{ github.event_name != 'workflow_dispatch' || inputs.wechat_share_identity }}
+      IM_DIAG: ${{ github.event_name == 'workflow_dispatch' && inputs.im_diag }}
     outputs:
       hide_feed_ads: ${{ steps.build_variant.outputs.hide_feed_ads }}
       block_words: ${{ steps.build_variant.outputs.block_words }}
@@ -230,6 +237,9 @@ jobs:
           fi
           if [[ "$ALLOW_DISABLED_DOWNLOADS" == "true" ]]; then
             args+=(--allow-disabled-downloads --decode-dex classes12.dex)
+          fi
+          if [[ "$IM_DIAG" == "true" ]]; then
+            args+=(--im-diag --decode-dex classes13.dex)
           fi
           if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
             args+=(--wechat-share-official-package)

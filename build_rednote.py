@@ -45,6 +45,11 @@ from rednote_function_switch_download_patch import (
     verify_compiled_image_download_switch,
 )
 from rednote_splash_ad_patch import patch_splash_ad_dispatch, verify_compiled_splash_patch
+from rednote_im_diag_patch import (
+    build_im_diag_dex,
+    install_im_diag,
+    verify_compiled_im_diag,
+)
 from rednote_block_words_patch import (
     declare_block_words_activity,
     build_block_words_dex,
@@ -1353,6 +1358,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Hide discovery-feed ad cards after original binding; preserve requests and feed data",
     )
     parser.add_argument(
+        "--im-diag", action="store_true",
+        help=(
+            "Diagnostic build: log the fortuna transport callbacks (send/state/error) to logcat "
+            "under the kiri-im tag. No behaviour change; not for a normal release."
+        ),
+    )
+    parser.add_argument(
         "--block-words", action="store_true",
         help=(
             "Hide discovery-feed cards whose visible text matches a user keyword list, "
@@ -1773,6 +1785,31 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             except Exception as exc:
                 raise BuildError(f"Could not prepare keyword block patch: {exc}") from exc
 
+        im_diag_audit: dict[str, Any] = {"enabled": False}
+        if args.im_diag:
+            try:
+                im_diag_audit = install_im_diag(decoded_dir)
+                im_diag_dex = build_im_diag_dex(temporary_root / "im-diag")
+                im_diag_name = next_dex_name(merge_input)
+                while im_diag_name in signature_compat_added_entries:
+                    im_diag_name = f"classes{int(im_diag_name[7:-4]) + 1}.dex"
+                signature_compat_added_entries[im_diag_name] = im_diag_dex
+                signature_compat_added_names.add(im_diag_name)
+                touched_dex_names.add("classes13.dex")
+                im_diag_audit.update(
+                    {
+                        "helperDexEntry": im_diag_name,
+                        "helperDexSha256": sha256_file(im_diag_dex),
+                        "touchedDexEntries": ["classes13.dex"],
+                    }
+                )
+                warnings.append(
+                    "--im-diag only adds logcat lines on the fortuna transport callbacks; "
+                    "it must not be shipped in a normal release."
+                )
+            except Exception as exc:
+                raise BuildError(f"Could not prepare IM diagnostics: {exc}") from exc
+
         splash_ad_audit: dict[str, Any] = {"enabled": False}
         if args.skip_splash_ads:
             try:
@@ -1924,6 +1961,10 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             changed_entries,
             added_entries=signature_compat_added_names,
         )
+        if args.im_diag:
+            im_diag_audit["compiledVerification"] = verify_compiled_im_diag(
+                output_path, "classes13.dex"
+            )
         if args.hide_feed_ads:
             feed_ad_audit["compiledVerification"] = verify_compiled_feed_patch(output_path)
         if args.block_words:
@@ -1999,6 +2040,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             },
             "feedAdDisplay": feed_ad_audit,
             "keywordBlocking": block_words_audit,
+            "imDiagnostics": im_diag_audit,
             "splashAdDisplay": splash_ad_audit,
             "authorDisabledDownloadUnlock": download_unlock_audit,
             "sharePanelDownloadUnlock": share_panel_unlock_audit,
