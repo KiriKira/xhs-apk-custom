@@ -259,6 +259,9 @@ jobs:
           unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.SF'
           unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.RSA'
           verify_args=(--expect-launcher-icon)
+          if [[ "$IM_DIAG" == "true" ]]; then
+            verify_args+=(--expect-im-diag)
+          fi
           if [[ "$HIDE_FEED_ADS" == "true" ]]; then
             verify_args+=(--expect-ads)
           else

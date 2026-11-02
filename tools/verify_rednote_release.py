@@ -44,7 +44,8 @@ def require(condition, message):
 
 
 def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect_wechat_share=None,
-           expect_splash_skip=None, expect_download_unlock=None, expect_block_words=None):
+           expect_splash_skip=None, expect_download_unlock=None, expect_block_words=None,
+           expect_im_diag=None):
     report = json.loads(report_path.read_text())
     require(report["input"]["sha256"] == SOURCE_SHA, "Unexpected source file")
     require(report["input"]["signerCertificateSha256"] == [SOURCE_CERT], "Unexpected source signer")
@@ -184,6 +185,19 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
                 "Unexpected image-download switch DEX")
         image_switch["compiledVerification"] = verify_compiled_image_download_switch(apk)
         expected_entries.add("classes12.dex")
+    im_diag = report.get("imDiagnostics", {"enabled": False})
+    require(type(im_diag.get("enabled")) is bool, "Invalid IM diagnostics flag")
+    if expect_im_diag is not None:
+        require(im_diag["enabled"] is expect_im_diag, "Unexpected IM diagnostics configuration")
+    if im_diag["enabled"]:
+        require(im_diag.get("touchedDexEntries") == ["classes13.dex"],
+                "Unexpected IM diagnostics DEX")
+        require(im_diag.get("compiledVerification", {}).get("verified") is True,
+                "IM diagnostics callbacks are not compiled into the APK")
+        require(im_diag.get("helperDexEntry") not in
+                {compat["helperDexEntry"], ads.get("helperDexEntry"), block_words.get("helperDexEntry")},
+                "IM diagnostics helper DEX collides with another helper")
+        expected_entries.update({"classes13.dex", im_diag["helperDexEntry"]})
     require(set(report["modifiedEntries"]) == expected_entries, "Unexpected modified entries")
     with zipfile.ZipFile(apk) as archive:
         resource_table = archive.read("resources.arsc")
@@ -253,6 +267,9 @@ if __name__ == "__main__":
     download_group.add_argument("--expect-download-unlock", action="store_true")
     download_group.add_argument("--expect-no-download-unlock", action="store_true")
     parser.add_argument("--expect-launcher-icon", action="store_true")
+    diag_group = parser.add_mutually_exclusive_group()
+    diag_group.add_argument("--expect-im-diag", action="store_true")
+    diag_group.add_argument("--expect-no-im-diag", action="store_true")
     words_group = parser.add_mutually_exclusive_group()
     words_group.add_argument("--expect-block-words", action="store_true")
     words_group.add_argument("--expect-no-block-words", action="store_true")
@@ -265,5 +282,6 @@ if __name__ == "__main__":
     expected_splash = True if args.expect_splash_skip else False if args.expect_no_splash_skip else None
     expected_download = True if args.expect_download_unlock else False if args.expect_no_download_unlock else None
     expected_block_words = True if args.expect_block_words else False if args.expect_no_block_words else None
+    expected_im_diag = True if args.expect_im_diag else False if args.expect_no_im_diag else None
     verify(args.apk, args.report, expected, args.expect_launcher_icon, expected_wechat, expected_splash,
-           expected_download, expected_block_words)
+           expected_download, expected_block_words, expected_im_diag)
