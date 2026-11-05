@@ -64,8 +64,14 @@ public final class ImDiag {
         emit("ack", result, null);
     }
 
-    public static void fail(Object code, Object reason) {
-        emit("fail", code, reason);
+    public static void fail(int code, Object reason) {
+        try {
+            StringBuilder line = new StringBuilder("[diag] fail pid=");
+            line.append(Process.myPid()).append(" code=").append(code)
+                    .append(" reason=").append(reason);
+            Log.i(TAG, line.toString());
+        } catch (Throwable ignored) {
+        }
     }
 
     public static void didSend(Object envelope) {
@@ -259,15 +265,46 @@ def _smali_path(decoded_dir: Path, dex_entry: str, class_name: str) -> Path:
     raise FileNotFoundError(f"{class_name} was not found in the decoded smali tree ({dex_entry})")
 
 
-def _helper_descriptor(count: int) -> str:
-    return "(" + "Ljava/lang/Object;" * count + ")V"
+def _parameter_types(signature: str) -> list[str]:
+    """Split the parameter list of a smali method signature into JVM type descriptors."""
+    start = signature.index("(") + 1
+    end = signature.index(")")
+    text = signature[start:end]
+    types: list[str] = []
+    index = 0
+    while index < len(text):
+        begin = index
+        while text[index] == "[":
+            index += 1
+        if text[index] == "L":
+            index = text.index(";", index) + 1
+        else:
+            index += 1
+        types.append(text[begin:index])
+    return types
 
 
-def _hook_lines(helper: str, arguments: tuple[str, ...]) -> str:
+def _hook_descriptor(signature: str, arguments: tuple[str, ...]) -> str:
+    """Descriptor of the helper call, taken from the hooked method so primitives stay primitives.
+
+    Passing an int register to a helper that expects an Object produces a verifier error and the
+    class fails to load, which crashes the app at startup.
+    """
+    types = _parameter_types(signature)
+    selected = []
+    for argument in arguments:
+        position = int(argument[1:]) - 1
+        kind = types[position]
+        # Reference types are widened to Object: the helper only ever calls toString() on them, and
+        # declaring the app's own classes would need them on the helper's compile classpath.
+        selected.append(kind if kind[0] not in "L[" else "Ljava/lang/Object;")
+    return "(" + "".join(selected) + ")V"
+
+
+def _hook_lines(helper: str, arguments: tuple[str, ...], descriptor: str) -> str:
     registers = ", ".join(arguments)
     return (
-        f"    invoke-static {{{registers}}}, {HELPER_DESCRIPTOR}->{helper}"
-        f"{_helper_descriptor(len(arguments))}\n"
+        f"    invoke-static {{{registers}}}, {HELPER_DESCRIPTOR}->{helper}{descriptor}\n"
     )
 
 
@@ -285,7 +322,7 @@ def _patch_method(
     body = text[body_start:end]
     if f"{HELPER_DESCRIPTOR}->{helper}(" in body:
         return text, False
-    hook = "\n" + _hook_lines(helper, arguments)
+    hook = "\n" + _hook_lines(helper, arguments, _hook_descriptor(signature, arguments))
     instruction_lines = sum(
         1 for line in body.splitlines() if line.startswith("    ") and not line.startswith("     ")
     )
@@ -340,7 +377,26 @@ def install_im_diag(decoded_dir: Path) -> dict:
     }
 
 
-def verify_compiled_im_diag(apk: Path, dex_entry: str) -> dict:
+def _helper_methods(apk: Path, helper_dex_entry: str) -> set[tuple[str, str]]:
+    """Return the (name, proto) pairs the compiled helper class really declares."""
+    import sys
+    import zipfile
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+    from verify_rednote_signature_compat import DexFile
+
+    with zipfile.ZipFile(apk) as archive:
+        dex = DexFile(archive.read(helper_dex_entry), helper_dex_entry)
+    definitions = dex.class_definitions(HELPER_DESCRIPTOR)
+    if len(definitions) != 1:
+        raise ValueError(f"{helper_dex_entry} is missing {HELPER_CLASS}")
+    return {
+        (dex.method_id(index)[1], dex.method_id(index)[2])
+        for index, _, _ in dex.method_records(definitions[0])
+    }
+
+
+def verify_compiled_im_diag(apk: Path, dex_entry: str, helper_dex_entry: str) -> dict:
     """Assert every hook target that lives in one dex calls the diagnostics helper."""
     import sys
     import zipfile
@@ -348,6 +404,7 @@ def verify_compiled_im_diag(apk: Path, dex_entry: str) -> dict:
     sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
     from verify_rednote_signature_compat import DexFile
 
+    helper_methods = _helper_methods(apk, helper_dex_entry)
     with zipfile.ZipFile(apk) as archive:
         dex = DexFile(archive.read(dex_entry), dex_entry)
     verified: list[str] = []
@@ -367,7 +424,12 @@ def verify_compiled_im_diag(apk: Path, dex_entry: str) -> dict:
         ]
         if len(codes) != 1:
             raise ValueError(f"Expected one {class_name}.{method} in {dex_entry}")
-        target = (HELPER_DESCRIPTOR, helper, _helper_descriptor(len(arguments)))
+        descriptor = _hook_descriptor(signature, arguments)
+        if (helper, descriptor) not in helper_methods:
+            raise ValueError(
+                f"{HELPER_CLASS} does not declare {helper}{descriptor} used by {class_name}.{method}"
+            )
+        target = (HELPER_DESCRIPTOR, helper, descriptor)
         if not _calls(dex, codes[0], target):
             raise ValueError(f"{class_name}.{method} does not call ImDiag.{helper}")
         verified.append(f"{class_name}.{method}")

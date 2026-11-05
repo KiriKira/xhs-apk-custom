@@ -1963,7 +1963,9 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         )
         if args.im_diag:
             im_diag_audit["compiledVerification"] = {
-                entry: verify_compiled_im_diag(output_path, entry)
+                entry: verify_compiled_im_diag(
+                    output_path, entry, im_diag_audit["helperDexEntry"]
+                )
                 for entry in im_diag_audit["touchedDexEntries"]
             }
             if not all(item["verified"] for item in im_diag_audit["compiledVerification"].values()):
