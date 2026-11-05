@@ -239,7 +239,7 @@ jobs:
             args+=(--allow-disabled-downloads --decode-dex classes12.dex)
           fi
           if [[ "$IM_DIAG" == "true" ]]; then
-            args+=(--im-diag --decode-dex classes13.dex)
+            args+=(--im-diag --decode-dex classes13.dex --decode-dex classes14.dex)
           fi
           if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
             args+=(--wechat-share-official-package)

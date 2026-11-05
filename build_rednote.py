@@ -1795,12 +1795,12 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                     im_diag_name = f"classes{int(im_diag_name[7:-4]) + 1}.dex"
                 signature_compat_added_entries[im_diag_name] = im_diag_dex
                 signature_compat_added_names.add(im_diag_name)
-                touched_dex_names.add("classes13.dex")
+                for im_diag_entry in im_diag_audit["touchedDexEntries"]:
+                    touched_dex_names.add(im_diag_entry)
                 im_diag_audit.update(
                     {
                         "helperDexEntry": im_diag_name,
                         "helperDexSha256": sha256_file(im_diag_dex),
-                        "touchedDexEntries": ["classes13.dex"],
                     }
                 )
                 warnings.append(
@@ -1962,9 +1962,12 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             added_entries=signature_compat_added_names,
         )
         if args.im_diag:
-            im_diag_audit["compiledVerification"] = verify_compiled_im_diag(
-                output_path, "classes13.dex"
-            )
+            im_diag_audit["compiledVerification"] = {
+                entry: verify_compiled_im_diag(output_path, entry)
+                for entry in im_diag_audit["touchedDexEntries"]
+            }
+            if not all(item["verified"] for item in im_diag_audit["compiledVerification"].values()):
+                raise BuildError("IM diagnostics hooks are missing from the compiled APK")
         if args.hide_feed_ads:
             feed_ad_audit["compiledVerification"] = verify_compiled_feed_patch(output_path)
         if args.block_words:

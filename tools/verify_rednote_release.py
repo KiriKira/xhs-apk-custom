@@ -190,14 +190,18 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     if expect_im_diag is not None:
         require(im_diag["enabled"] is expect_im_diag, "Unexpected IM diagnostics configuration")
     if im_diag["enabled"]:
-        require(im_diag.get("touchedDexEntries") == ["classes13.dex"],
+        diag_entries = im_diag.get("touchedDexEntries")
+        require(diag_entries == ["classes13.dex", "classes14.dex"],
                 "Unexpected IM diagnostics DEX")
-        require(im_diag.get("compiledVerification", {}).get("verified") is True,
+        compiled = im_diag.get("compiledVerification") or {}
+        require(set(compiled) == set(diag_entries),
+                "IM diagnostics verification does not cover every touched DEX")
+        require(all(item.get("verified") is True for item in compiled.values()),
                 "IM diagnostics callbacks are not compiled into the APK")
         require(im_diag.get("helperDexEntry") not in
                 {compat["helperDexEntry"], ads.get("helperDexEntry"), block_words.get("helperDexEntry")},
                 "IM diagnostics helper DEX collides with another helper")
-        expected_entries.update({"classes13.dex", im_diag["helperDexEntry"]})
+        expected_entries.update(set(diag_entries) | {im_diag["helperDexEntry"]})
     require(set(report["modifiedEntries"]) == expected_entries, "Unexpected modified entries")
     with zipfile.ZipFile(apk) as archive:
         resource_table = archive.read("resources.arsc")
