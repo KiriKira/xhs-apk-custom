@@ -7,7 +7,7 @@
 
 
 # annotations
-.annotation runtime Lqcc/a;
+.annotation runtime Lasc/a;
 .end annotation
 
 
@@ -28,19 +28,19 @@
 
 # instance fields
 .field private disableCoverWeibo:Z
-    .annotation runtime Lxf/c;
+    .annotation runtime Lgg/c;
         value = "disable_weibo_cover"
     .end annotation
 .end field
 
 .field private disableSaveMedia:Z
-    .annotation runtime Lxf/c;
+    .annotation runtime Lgg/c;
         value = "disable_save"
     .end annotation
 .end field
 
 .field private disableWaterMark:Z
-    .annotation runtime Lxf/c;
+    .annotation runtime Lgg/c;
         value = "disable_watermark"
     .end annotation
 .end field
@@ -134,7 +134,7 @@
 
 
 # virtual methods
-.method public final b()Z
+.method public final a()Z
     .locals 1
 
     .line 1
@@ -143,7 +143,7 @@
     return v0
 .end method
 
-.method public final d()Z
+.method public final b()Z
     .locals 1
 
     .line 1
@@ -156,6 +156,15 @@
     .locals 1
 
     const/4 v0, 0x0
+
+    return v0
+.end method
+
+.method public final e()Z
+    .locals 1
+
+    .line 1
+    iget-boolean v0, p0, Lcom/xingin/entities/MediaSaveConfig;->disableWaterMark:Z
 
     return v0
 .end method
@@ -212,15 +221,6 @@
     return v2
 
     :cond_4
-    return v0
-.end method
-
-.method public final f()Z
-    .locals 1
-
-    .line 1
-    iget-boolean v0, p0, Lcom/xingin/entities/MediaSaveConfig;->disableWaterMark:Z
-
     return v0
 .end method
 

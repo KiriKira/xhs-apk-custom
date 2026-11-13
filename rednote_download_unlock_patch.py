@@ -19,9 +19,12 @@ import zipfile
 
 CLASS = "com.xingin.entities.MediaSaveConfig"
 DESCRIPTOR = "Lcom/xingin/entities/MediaSaveConfig;"
-METHOD = "d"
+# The getter name is obfuscated per build: 9.48.1 used ``d()``, 9.54.0 uses ``b()``.
+METHOD = "b"
 PROTO = "()Z"
-EXPECTED_METHOD_SHA = "f5a2c781a32767cb58ffec3ab25de21779164738c551105affc3215e40323f8e"
+# Pinned sha256 of ``MediaSaveConfig.b()Z`` in REDnote 9.54.0 (9540804),
+# APKEditor 1.4.9 / jf decode. Recompute for a new base build.
+EXPECTED_METHOD_SHA = "4c2a4a1f4fa80d67009e64a7dd682829bee5cd1cb8e089e890e8328f9724ef10"
 DISABLED_FIELD_READ = (
     "    iget-boolean v0, p0, Lcom/xingin/entities/MediaSaveConfig;->"
     "disableSaveMedia:Z\n"
@@ -31,7 +34,7 @@ ALLOWED_RETURN = "    const/4 v0, 0x0\n"
 
 def patch_media_save_config(smali_path: Path) -> dict:
     text = smali_path.read_text()
-    pattern = r"^\.method public final d\(\)Z\n.*?^\.end method"
+    pattern = rf"^\.method public final {METHOD}\(\)Z\n.*?^\.end method"
     methods = list(re.finditer(pattern, text, re.M | re.S))
     if len(methods) != 1:
         raise ValueError("Expected exactly one MediaSaveConfig download getter")
@@ -39,7 +42,7 @@ def patch_media_save_config(smali_path: Path) -> dict:
     original = match.group()
     if hashlib.sha256(original.encode()).hexdigest() != EXPECTED_METHOD_SHA:
         raise ValueError(
-            "MediaSaveConfig download getter differs from the verified REDnote 9.48.1 input"
+            "MediaSaveConfig download getter differs from the verified REDnote input"
         )
     if original.count(DISABLED_FIELD_READ) != 1:
         raise ValueError("Unexpected MediaSaveConfig download getter layout")
@@ -55,7 +58,7 @@ def patch_media_save_config(smali_path: Path) -> dict:
         "equalsAndHashCodePreserved": True,
         "serverPayloadUnchanged": True,
         "scope": (
-            "MediaSaveConfig.d() is the single permission getter consumed by the image-gallery "
+            "MediaSaveConfig.b() is the single permission getter consumed by the image-gallery "
             "state, long-press/detail click gates, paid-download path and gallery controllers. "
             "The disable_save field and every other MediaSaveConfig getter remain unchanged."
         ),

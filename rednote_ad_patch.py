@@ -11,8 +11,12 @@ ADAPTER = "com.xingin.xhs.homepage.explorefeed.mainfeed.view.FeedCustomMultiType
 DESCRIPTOR = "L" + ADAPTER.replace(".", "/") + ";"
 PROTO = "(Landroidx/recyclerview/widget/RecyclerView$ViewHolder;ILjava/util/List;)V"
 HELPER = "Ldev/kiri/xhsads/FeedAdDisplay;"
-EXPECTED_METHOD_SHA = "d99f67996810ccd7abf1fddc8b02bba0284f668e4fa5914ac38e971f175f47fe"
+# Pinned sha256 of the discovery-feed bind method in REDnote 9.54.0 (9540804),
+# APKEditor 1.4.9 / jf decode. Recompute for a new base build.
+EXPECTED_METHOD_SHA = "caad7d83ccf094a6109a0898c1b57c79f5f9c705a51771f5060da810a0d050cf"
 SUPER_BIND = "    invoke-super {p0, p1, p2, p3}, Lcom/drakeet/multitype/MultiTypeAdapter;->onBindViewHolder" + PROTO
+# Obfuscated per build: 9.48.1 exposed the item list as ``B0()``, 9.54.0 as ``A0()``.
+ITEMS_ACCESSOR = "A0"
 
 RESTORE = """    # rednote-feed-ad-restore-before-bind
     iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->itemView:Landroid/view/View;
@@ -21,23 +25,28 @@ RESTORE = """    # rednote-feed-ad-restore-before-bind
 
 """
 
-HIDE = """
-
-    # rednote-feed-ad-hide-after-bind
-    invoke-virtual {p0}, Lcom/drakeet/multitype/MultiTypeAdapter;->B0()Ljava/util/List;
-    move-result-object v1
-    invoke-interface {v1, p2}, Ljava/util/List;->get(I)Ljava/lang/Object;
-    move-result-object v1
-    move-object v2, v1
-    iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->itemView:Landroid/view/View;
-    invoke-static {v0, v1}, Ldev/kiri/xhsads/FeedInspector;->onBind(Landroid/view/View;Ljava/lang/Object;)V
-    invoke-static {v1}, Ldev/kiri/xhsads/FeedAdDetector;->isAd(Ljava/lang/Object;)Z
-    move-result v1
-
-    :rednote_feed_ad_apply
-    iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->itemView:Landroid/view/View;
-    invoke-static {v0, v1}, Ldev/kiri/xhsads/FeedAdDisplay;->apply(Landroid/view/View;Z)V
-"""
+HIDE = (
+    "\n\n    # rednote-feed-ad-hide-after-bind\n"
+    "    invoke-virtual {p0}, Lcom/drakeet/multitype/MultiTypeAdapter;->"
+    + ITEMS_ACCESSOR
+    + "()Ljava/util/List;\n"
+    "    move-result-object v1\n"
+    "    invoke-interface {v1, p2}, Ljava/util/List;->get(I)Ljava/lang/Object;\n"
+    "    move-result-object v1\n"
+    "    move-object v2, v1\n"
+    "    iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->"
+    "itemView:Landroid/view/View;\n"
+    "    invoke-static {v0, v1}, Ldev/kiri/xhsads/FeedInspector;->"
+    "onBind(Landroid/view/View;Ljava/lang/Object;)V\n"
+    "    invoke-static {v1}, Ldev/kiri/xhsads/FeedAdDetector;->isAd(Ljava/lang/Object;)Z\n"
+    "    move-result v1\n"
+    "\n"
+    "    :rednote_feed_ad_apply\n"
+    "    iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->"
+    "itemView:Landroid/view/View;\n"
+    "    invoke-static {v0, v1}, Ldev/kiri/xhsads/FeedAdDisplay;->"
+    "apply(Landroid/view/View;Z)V\n"
+)
 
 
 def patch_feed_bind(smali_path: Path) -> dict:
@@ -49,7 +58,7 @@ def patch_feed_bind(smali_path: Path) -> dict:
     match = methods[0]
     original = match.group()
     if hashlib.sha256(original.encode()).hexdigest() != EXPECTED_METHOD_SHA:
-        raise ValueError("Feed bind method differs from the verified REDnote 9.48.1 input")
+        raise ValueError("Feed bind method differs from the verified REDnote input")
     if original.count(SUPER_BIND) != 1 or "    .locals 4\n" not in original:
         raise ValueError("Unexpected feed bind register or superclass layout")
     patched = original.replace(SUPER_BIND, RESTORE + SUPER_BIND + HIDE)

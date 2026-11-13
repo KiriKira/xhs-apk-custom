@@ -20,12 +20,14 @@ import zipfile
 
 CLASS = "com.xingin.entities.ShareInfoDetail$Operate"
 DESCRIPTOR = "Lcom/xingin/entities/ShareInfoDetail$Operate;"
-METHOD = "b"
+# Obfuscated per build: 9.48.1 exposed the disable getter as ``b()``, 9.54.0 as ``a()``.
+METHOD = "a"
 PROTO = "()Z"
 DOWNLOAD_TYPE = "download_all_image_new"
-EXPECTED_METHOD_SHA = "90676c712d0c077e10515130c6cb47188023373b6a264ea12e8e7586d0e96434"
+# Pinned sha256 of ``ShareInfoDetail$Operate.a()Z`` in REDnote 9.54.0 (9540804).
+EXPECTED_METHOD_SHA = "01d05ef0727bf0d7c52306fcdb8cde4a83e18921070ceb8fc3202e7741849a30"
 ORIGINAL_BODY = (
-    ".method public final b()Z\n"
+    ".method public final a()Z\n"
     "    .locals 1\n"
     "\n"
     "    .line 1\n"
@@ -35,7 +37,7 @@ ORIGINAL_BODY = (
     ".end method"
 )
 PATCHED_BODY = (
-    ".method public final b()Z\n"
+    ".method public final a()Z\n"
     "    .locals 2\n"
     "\n"
     "    .line 1\n"
@@ -63,7 +65,7 @@ PATCHED_BODY = (
 
 def patch_share_panel_download(smali_path: Path) -> dict:
     text = smali_path.read_text()
-    pattern = r"^\.method public final b\(\)Z\n.*?^\.end method"
+    pattern = rf"^\.method public final {METHOD}\(\)Z\n.*?^\.end method"
     methods = list(re.finditer(pattern, text, re.M | re.S))
     if len(methods) != 1:
         raise ValueError("Expected exactly one ShareInfoDetail$Operate disable getter")
@@ -71,7 +73,7 @@ def patch_share_panel_download(smali_path: Path) -> dict:
     original = match.group()
     if hashlib.sha256(original.encode()).hexdigest() != EXPECTED_METHOD_SHA:
         raise ValueError(
-            "ShareInfoDetail$Operate disable getter differs from the verified REDnote 9.48.1 input"
+            "ShareInfoDetail$Operate disable getter differs from the verified REDnote input"
         )
     if original != ORIGINAL_BODY:
         raise ValueError("Unexpected ShareInfoDetail$Operate disable getter layout")

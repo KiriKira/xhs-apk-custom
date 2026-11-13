@@ -51,7 +51,7 @@ on:
         description: Release tag to create or use
         type: string
         required: true
-        default: rednote-v9.48.1-9
+        default: rednote-v9.54.0-1
       prerelease:
         description: Mark the published GitHub Release as a pre-release
         type: boolean
@@ -190,12 +190,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p input bins
-          XAPK="input/rednote-9.48.1-9481803.xapk"
+          XAPK="input/rednote-9.54.0-9540804.xapk"
           APKEDITOR="bins/apkeditor.jar"
           curl --fail --location --retry 3 \
-            "https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21" \
+            "https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9540804" \
             --output "$XAPK"
-          echo "bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0  $XAPK" | sha256sum --check --status
+          echo "096f0f6a38316a3b971f8500472b0e84f442521d84b7a887e13736cebb0e10c0  $XAPK" | sha256sum --check --status
           curl --fail --location --retry 3 \
             "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar" \
             --output "$APKEDITOR"
@@ -211,15 +211,15 @@ jobs:
           set -euo pipefail
           args=(
             python build_rednote.py
-            --input input/rednote-9.48.1-9481803.xapk
-            --sha256 bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0
-            --source "APKPure XAPK com.xingin.xhs versionCode 9481803"
+            --input input/rednote-9.54.0-9540804.xapk
+            --sha256 096f0f6a38316a3b971f8500472b0e84f442521d84b7a887e13736cebb0e10c0
+            --source "APKPure XAPK com.xingin.xhs versionCode 9540804"
             --application-id com.kirikira.rednote.fold
             --fold-layout
             --signature-compat
             --keep-original-main-process
             --launcher-icon assets/branding/xiaokshu.png
-            --decode-dex classes17.dex
+            --decode-dex classes3.dex
             --decode-dex classes4.dex
             --output output_apks/rednote-fold-custom.apk
             --report output_apks/rednote-fold-build-report.json
@@ -236,7 +236,7 @@ jobs:
             args+=(--skip-splash-ads)
           fi
           if [[ "$ALLOW_DISABLED_DOWNLOADS" == "true" ]]; then
-            args+=(--allow-disabled-downloads --decode-dex classes12.dex)
+            args+=(--allow-disabled-downloads --decode-dex classes12.dex --decode-dex classes13.dex)
           fi
           if [[ "$IM_DIAG" == "true" ]]; then
             args+=(--im-diag --decode-dex classes13.dex --decode-dex classes14.dex)
@@ -255,7 +255,7 @@ jobs:
           apksigner verify --verbose --print-certs "$APK" | tee /tmp/rednote-apksigner.txt
           grep -F "Signer #1 certificate SHA-256 digest: 637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4" /tmp/rednote-apksigner.txt
           zipalign -c -P 16 -v 4 "$APK"
-          aapt2 dump badging "$APK" | grep -F "package: name='com.kirikira.rednote.fold' versionCode='9481803' versionName='9.48.1'"
+          aapt2 dump badging "$APK" | grep -F "package: name='com.kirikira.rednote.fold' versionCode='9540804' versionName='9.54.0'"
           unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.SF'
           unzip -Z1 "$APK" | grep -Fx 'META-INF/XINGIN.RSA'
           verify_args=(--expect-launcher-icon)
@@ -349,7 +349,7 @@ jobs:
             sha256sum --check SHA256SUMS
           )
           cat > release-notes.md <<'NOTES'
-          REDnote 9.48.1 fold build with the 小K书 launcher icon, discovery-feed ad cards hidden, the cold-start splash ad skipped through the app's original no-ad path, author-disabled downloads unlocked through the app's normal save path, the source main-process name preserved, and the compiled resource-table package name set to `com.kirikira.rednote.fold`.
+          REDnote 9.54.0 fold build with the 小K书 launcher icon, discovery-feed ad cards hidden, the cold-start splash ad skipped through the app's original no-ad path, author-disabled downloads unlocked through the app's normal save path, the source main-process name preserved, and the compiled resource-table package name set to `com.kirikira.rednote.fold`.
 
           The author-disabled download patch enables the existing save paths for notes whose author disabled downloads. The note-detail and gallery gates take their normal allowed branch, the `image_download` function switch reports enabled for every panel that renders a save action, and the share sheet's `download_all_image_new` entry no longer renders greyed or shows the server's disable toast; other function switches and share entries keep the server's flags. The server payload, the stored `disable_save`/`enable`/`disable` fields, the share entry's `disableToast`, the Parcel representation and every unrelated accessor remain unchanged.
 
@@ -357,7 +357,7 @@ jobs:
 
           The launcher icon uses the 小K书 branding. The feed ad patch hides ad cards and restores a recycled card's source view state before rebinding. It does not change feed requests or data. The splash-ad patch routes the cold-start splash-ad dispatch to the app's original no-ad branch: the home view is created without an ad, while the ad request, payload download and telemetry are unchanged. The splash-ad skip is verified at the static and compiled-bytecode level; no live server-delivered splash ad was observed in a device test for this revision. The package-compatibility fix preserves the original main-process behavior while keeping the installed package at `com.kirikira.rednote.fold`.
 
-          Android `versionCode` 9481803, `versionName` 9.48.1, package name, and signing certificate remain unchanged. Release tags identify patch revisions.
+          Android `versionCode` 9540804, `versionName` 9.54.0, package name, and signing certificate remain unchanged. Release tags identify patch revisions.
 
           No SMS or OTP flow was run for this build. No user phone number or verification code is included in the release assets.
 
@@ -376,9 +376,9 @@ jobs:
 
           **WeChat sharing:** Only SendMessageToWX requests (command 2) targeting WeChat declare `com.xingin.xhs` instead of the installed clone package. The existing checksum uses that same declared package. Original requests, media and AppID are retained. App registration, token acquisition, actual calling UID, cryptographic APK signer, login/payment requests and callback routing are unchanged.
 
-          **WeChat sharing requires the official international REDnote (Google Play edition, package `com.xingin.xhs`) installed alongside 小K书.** The account owner confirmed successful WeChat sharing with this configuration in release `rednote-v9.48.1-6`. Callbacks may return to the official REDnote app. [Install official international REDnote](https://play.google.com/store/apps/details?id=com.xingin.xhs).
+          **WeChat sharing requires the official international REDnote (Google Play edition, package `com.xingin.xhs`) installed alongside 小K书.** The account owner confirmed successful WeChat sharing with this configuration in earlier 9.48.1 releases. Callbacks may return to the official REDnote app. [Install official international REDnote](https://play.google.com/store/apps/details?id=com.xingin.xhs).
 
-          To return to the previous stable build, overlay-install [rednote-v9.48.1-9](https://github.com/KiriKira/xhs-apk-custom/releases/download/rednote-v9.48.1-9/rednote-fold-custom.apk). Package, signer and Android versions remain identical; no uninstall or separate rollback VM is required.
+          This build carries Android `versionCode` 9540804, so it upgrades in place over the 9.48.1 (`9481803`) releases and later rolls back the same way through the official REDnote release. The package name and signing certificate are unchanged, so no uninstall is required.
           NOTES
           fi
 

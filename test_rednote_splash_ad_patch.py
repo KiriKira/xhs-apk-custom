@@ -2,7 +2,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from rednote_splash_ad_patch import AD_BRANCH, NO_AD_BRANCH, patch_splash_ad_dispatch
+from rednote_splash_ad_patch import (
+    AD_BRANCH,
+    DISPATCH_PROTO,
+    NO_AD_BRANCH,
+    patch_splash_ad_dispatch,
+)
 
 
 class SplashAdPatchTests(unittest.TestCase):
@@ -12,16 +17,21 @@ class SplashAdPatchTests(unittest.TestCase):
         self.path = Path(self.temp.name) / "uy.f.smali"
         self.source = (
             Path(__file__).parent
-            / "tests/fixtures/rednote_9481_splash_dispatch.smali"
+            / "tests/fixtures/rednote_9540_splash_dispatch.smali"
         ).read_text()
         self.path.write_text(self.source)
+
+    def _dispatch(self, text):
+        head = f".method public final a{DISPATCH_PROTO}\n"
+        return text.split(head, 1)[1].split(".end method", 1)[0]
 
     def test_keeps_every_instruction_except_the_branch(self):
         audit = patch_splash_ad_dispatch(self.path)
         patched = self.path.read_text()
         self.assertEqual(patched, self.source.replace(AD_BRANCH, NO_AD_BRANCH, 1))
-        self.assertEqual(patched.count(NO_AD_BRANCH), 1)
-        self.assertNotIn(AD_BRANCH, patched)
+        dispatch = self._dispatch(patched)
+        self.assertEqual(dispatch.count(NO_AD_BRANCH), 1)
+        self.assertNotIn(AD_BRANCH, dispatch)
         self.assertTrue(audit["adBranchBypassed"])
         self.assertTrue(audit["adCallbackRetained"])
         self.assertTrue(audit["noAdCallbackRetained"])

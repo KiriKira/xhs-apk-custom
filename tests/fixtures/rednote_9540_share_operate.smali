@@ -7,6 +7,9 @@
 
 
 # annotations
+.annotation runtime Lasc/a;
+.end annotation
+
 .annotation system Ldalvik/annotation/EnclosingClass;
     value = Lcom/xingin/entities/ShareInfoDetail;
 .end annotation
@@ -14,9 +17,6 @@
 .annotation system Ldalvik/annotation/InnerClass;
     accessFlags = 0x19
     name = "Operate"
-.end annotation
-
-.annotation runtime Lqcc/a;
 .end annotation
 
 
@@ -321,7 +321,7 @@
 
 
 # virtual methods
-.method public final b()Z
+.method public final a()Z
     .locals 1
 
     .line 1
@@ -330,7 +330,7 @@
     return v0
 .end method
 
-.method public final d()Ljava/lang/String;
+.method public final b()Ljava/lang/String;
     .locals 1
     .annotation build Lorg/jetbrains/annotations/NotNull;
     .end annotation
@@ -349,7 +349,7 @@
     return v0
 .end method
 
-.method public final f()Z
+.method public final e()Z
     .locals 1
 
     .line 1
@@ -358,7 +358,7 @@
     return v0
 .end method
 
-.method public final h()Ljava/lang/String;
+.method public final f()Ljava/lang/String;
     .locals 1
     .annotation build Lorg/jetbrains/annotations/NotNull;
     .end annotation
@@ -369,7 +369,7 @@
     return-object v0
 .end method
 
-.method public final j()Ljava/lang/String;
+.method public final i()Ljava/lang/String;
     .locals 1
     .annotation build Lorg/jetbrains/annotations/NotNull;
     .end annotation
@@ -380,7 +380,7 @@
     return-object v0
 .end method
 
-.method public final l()Ljava/util/List;
+.method public final j()Ljava/util/List;
     .locals 1
     .annotation system Ldalvik/annotation/Signature;
         value = {
@@ -411,7 +411,7 @@
     return-object v0
 .end method
 
-.method public final p()Ljava/lang/String;
+.method public final n()Ljava/lang/String;
     .locals 1
     .annotation build Lorg/jetbrains/annotations/NotNull;
     .end annotation
@@ -422,11 +422,46 @@
     return-object v0
 .end method
 
-.method public final q(Z)V
+.method public final o(Z)V
     .locals 0
 
     .line 1
     iput-boolean p1, p0, Lcom/xingin/entities/ShareInfoDetail$Operate;->disable:Z
+
+    return-void
+.end method
+
+.method public final r(Ljava/lang/String;)V
+    .locals 0
+    .param p1    # Ljava/lang/String;
+        .annotation build Lorg/jetbrains/annotations/NotNull;
+        .end annotation
+    .end param
+
+    .line 1
+    iput-object p1, p0, Lcom/xingin/entities/ShareInfoDetail$Operate;->disableToast:Ljava/lang/String;
+
+    return-void
+.end method
+
+.method public final s(Z)V
+    .locals 0
+
+    .line 1
+    iput-boolean p1, p0, Lcom/xingin/entities/ShareInfoDetail$Operate;->drawRedDot:Z
+
+    return-void
+.end method
+
+.method public final t(Ljava/lang/String;)V
+    .locals 0
+    .param p1    # Ljava/lang/String;
+        .annotation build Lorg/jetbrains/annotations/NotNull;
+        .end annotation
+    .end param
+
+    .line 1
+    iput-object p1, p0, Lcom/xingin/entities/ShareInfoDetail$Operate;->labelImageUrl:Ljava/lang/String;
 
     return-void
 .end method
@@ -502,41 +537,6 @@
     .line 52
     return-object v0
     .line 53
-.end method
-
-.method public final u(Ljava/lang/String;)V
-    .locals 0
-    .param p1    # Ljava/lang/String;
-        .annotation build Lorg/jetbrains/annotations/NotNull;
-        .end annotation
-    .end param
-
-    .line 1
-    iput-object p1, p0, Lcom/xingin/entities/ShareInfoDetail$Operate;->disableToast:Ljava/lang/String;
-
-    return-void
-.end method
-
-.method public final v(Z)V
-    .locals 0
-
-    .line 1
-    iput-boolean p1, p0, Lcom/xingin/entities/ShareInfoDetail$Operate;->drawRedDot:Z
-
-    return-void
-.end method
-
-.method public final w(Ljava/lang/String;)V
-    .locals 0
-    .param p1    # Ljava/lang/String;
-        .annotation build Lorg/jetbrains/annotations/NotNull;
-        .end annotation
-    .end param
-
-    .line 1
-    iput-object p1, p0, Lcom/xingin/entities/ShareInfoDetail$Operate;->labelImageUrl:Ljava/lang/String;
-
-    return-void
 .end method
 
 .method public writeToParcel(Landroid/os/Parcel;I)V

@@ -33,7 +33,7 @@ from verify_rednote_signature_compat import verify_signature_compat
 PACKAGE = "com.kirikira.rednote.fold"
 SOURCE_PACKAGE = "com.xingin.xhs"
 SOURCE_PROCESS = "com.xingin.xhs"
-SOURCE_SHA = "bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0"
+SOURCE_SHA = "096f0f6a38316a3b971f8500472b0e84f442521d84b7a887e13736cebb0e10c0"
 SOURCE_CERT = "dbf2ddfe68dc6c3d7bdbd1c70aae13993f50fa99b51d6f0c668a284ee9e6fdcd"
 OUTPUT_CERT = "637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4"
 
@@ -51,12 +51,12 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     require(report["input"]["signerCertificateSha256"] == [SOURCE_CERT], "Unexpected source signer")
     output = report["output"]
     require(output["packageName"] == PACKAGE, "Unexpected output package")
-    require(output["versionCode"] == "9481803", "Unexpected versionCode")
-    require(output["versionName"] == "9.48.1", "Unexpected versionName")
+    require(output["versionCode"] == "9540804", "Unexpected versionCode")
+    require(output["versionName"] == "9.54.0", "Unexpected versionName")
     badging = subprocess.check_output([os.environ.get("AAPT2", "aapt2"), "dump", "badging", str(apk)], text=True)
     package_line = next(line for line in badging.splitlines() if line.startswith("package:"))
     versions = dict(re.findall(r"(?:^|\s)(name|versionCode|versionName)='([^']*)'", package_line))
-    require(versions == {"name": PACKAGE, "versionCode": "9481803", "versionName": "9.48.1"},
+    require(versions == {"name": PACKAGE, "versionCode": "9540804", "versionName": "9.54.0"},
             "Actual APK versions must remain compatible with the previous release for direct rollback")
     require(output["signerCertificateSha256"] == [OUTPUT_CERT], "Unexpected output signer")
     require(output["signatureVerification"] == "passed", "Signature verification failed")
@@ -81,8 +81,11 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
             "Unexpected effective application process name")
     require(process_compat.get("preservedOriginalPredicate") is True,
             "Original source main-process predicate was not preserved")
-    require(process_compat.get("touchedDexEntry") == "classes17.dex",
-            "Unexpected source main-process predicate DEX entry")
+    require(process_compat.get("strategy") == "preserve-source-process" or
+            process_compat.get("touchedDexEntry"),
+            "Missing main-process predicate DEX entry")
+    if process_compat.get("preservedOriginalPredicate") is not True:
+        expected_entries.add(process_compat["touchedDexEntry"])
 
     resource_compat = report.get("resourcePackageCompatibility")
     require(isinstance(resource_compat, dict) and resource_compat.get("enabled") is True,
@@ -100,8 +103,9 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     require(resource_audit.get("all_bytes_outside_name_field_unchanged") is True,
             "Resource-table audit reports changes outside the package-name field")
 
+    # Foldable gate DEX moved to classes3.dex in 9.54.0.
     expected_entries = {
-        "AndroidManifest.xml", "classes17.dex", "classes4.dex", compat["helperDexEntry"]
+        "AndroidManifest.xml", "classes3.dex", compat["helperDexEntry"]
     }
     expected_entries.add("resources.arsc")
     wechat_share = report.get("wechatShareIdentity", {"enabled": False})
@@ -111,7 +115,7 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     if wechat_share["enabled"]:
         require(wechat_share.get("realPackage") == PACKAGE, "Unexpected real WeChat caller package")
         require(wechat_share.get("claimedPackage") == SOURCE_PACKAGE, "Unexpected declared WeChat package")
-        require(wechat_share.get("touchedDexEntry") == "classes4.dex", "Unexpected WeChat sender DEX")
+        require(wechat_share.get("touchedDexEntry") == "classes3.dex", "Unexpected WeChat sender DEX")
         report["compiledWechatShareIdentityVerification"] = verify_compiled_wechat_share_identity(apk, SOURCE_PACKAGE)
         expected_entries.add(wechat_share["touchedDexEntry"])
     icon = report.get("launcherIcon", {"enabled": False})
@@ -157,6 +161,7 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     if splash["enabled"]:
         require(splash["touchedDexEntry"] == "classes4.dex", "Unexpected splash dispatcher DEX")
         splash["compiledVerification"] = verify_compiled_splash_patch(apk)
+        expected_entries.add(splash["touchedDexEntry"])
     download_unlock = report.get("authorDisabledDownloadUnlock", {"enabled": False})
     require(type(download_unlock.get("enabled")) is bool, "Invalid download-unlock patch flag")
     if expect_download_unlock is not None:
@@ -181,10 +186,10 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     require(image_switch.get("enabled") is download_unlock.get("enabled"),
             "Image-download switch patch is inconsistent with the download unlock")
     if image_switch["enabled"]:
-        require(image_switch.get("touchedDexEntry") == "classes12.dex",
+        require(image_switch.get("touchedDexEntry") == "classes13.dex",
                 "Unexpected image-download switch DEX")
         image_switch["compiledVerification"] = verify_compiled_image_download_switch(apk)
-        expected_entries.add("classes12.dex")
+        expected_entries.add("classes13.dex")
     im_diag = report.get("imDiagnostics", {"enabled": False})
     require(type(im_diag.get("enabled")) is bool, "Invalid IM diagnostics flag")
     if expect_im_diag is not None:
@@ -236,7 +241,9 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
             require(hashlib.sha256(archive.read(block_words["helperDexEntry"])).hexdigest() ==
                     block_words["helperDexSha256"], "Keyword helper DEX hash mismatch")
     report["compiledSignatureCompatibilityVerification"] = verify_signature_compat(apk, PACKAGE, SOURCE_CERT)
-    report["compiledMainProcessGateVerification"] = verify_process_gate(apk, SOURCE_PROCESS)
+    report["compiledMainProcessGateVerification"] = verify_process_gate(
+        apk, SOURCE_PROCESS, PACKAGE
+    )
     manifest_process = verify_manifest_process(apk, os.environ.get("AAPT2", "aapt2"))
     require(manifest_process.get("applicationProcess") == SOURCE_PROCESS,
             "Compiled application manifest does not preserve the source process name")
@@ -250,8 +257,8 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     }
     report["compiledFoldGateVerification"] = verify_fold_gates(apk)
     report["compiledV1EntryNameVerification"] = {"present": True}
-    report["rollbackCompatibility"] = {"package": PACKAGE, "versionCode": 9481803,
-                                       "versionName": "9.48.1", "keystoreSignerSha256": OUTPUT_CERT,
+    report["rollbackCompatibility"] = {"package": PACKAGE, "versionCode": 9540804,
+                                       "versionName": "9.54.0", "keystoreSignerSha256": OUTPUT_CERT,
                                        "policy": "Keep Android versions unchanged; distinguish patch revisions by Release tags"}
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({"verified": True, "package": PACKAGE, "apkSha256": actual_sha}))

@@ -15,16 +15,17 @@ import struct
 import sys
 import zipfile
 
-DISPATCH_CLASS = "uy.f"
-DISPATCH_DESCRIPTOR = "Luy/f;"
+DISPATCH_CLASS = "qz.f"
+DISPATCH_DESCRIPTOR = "Lqz/f;"
 DISPATCH_METHOD = "a"
 DISPATCH_PROTO = (
-    "(Lqe/o;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;)V"
+    "(Lwe/o;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;)V"
 )
-EXPECTED_METHOD_SHA = "00b0227cecdab5073d2806b8d44aa79d7fa6e3d4e17e3e8151987b277d5e72dc"
+# Pinned sha256 of the cold-start splash dispatch in REDnote 9.54.0 (9540804).
+EXPECTED_METHOD_SHA = "4a7e33315e63e54073a81368dec40e8170e0ef0c93ca367f55c9cb6141fedd96"
 AD_BRANCH = "    if-eqz v0, :cond_0\n"
 NO_AD_BRANCH = "    goto :cond_0\n"
-QUERY_CALL = "    invoke-virtual {p1}, Lqe/o;->c()Z\n"
+QUERY_CALL = "    invoke-virtual {p1}, Lwe/o;->c()Z\n"
 AD_CALLBACK = (
     "    invoke-interface {p2, p1}, Lkotlin/jvm/functions/Function1;->"
     "invoke(Ljava/lang/Object;)Ljava/lang/Object;\n"
@@ -33,7 +34,7 @@ NO_AD_CALLBACK = (
     "    invoke-interface {p3, p1}, Lkotlin/jvm/functions/Function1;->"
     "invoke(Ljava/lang/Object;)Ljava/lang/Object;\n"
 )
-NO_AD_MARKER_FIELD = ("Lgz/f;", "a", "Lgz/f;")
+NO_AD_MARKER_FIELD = ("Lc00/f;", "a", "Lc00/f;")
 FUNCTION1_INVOKE = (
     "Lkotlin/jvm/functions/Function1;",
     "invoke",
@@ -43,7 +44,7 @@ FUNCTION1_INVOKE = (
 
 def patch_splash_ad_dispatch(smali_path: Path) -> dict:
     text = smali_path.read_text()
-    pattern = r"^\.method public final a\(Lqe/o;.*?^\.end method"
+    pattern = r"^\.method public final a\(Lwe/o;.*?^\.end method"
     methods = list(re.finditer(pattern, text, re.M | re.S))
     if len(methods) != 1:
         raise ValueError("Expected exactly one cold-start splash-ad dispatch method")
@@ -51,7 +52,7 @@ def patch_splash_ad_dispatch(smali_path: Path) -> dict:
     original = match.group()
     if hashlib.sha256(original.encode()).hexdigest() != EXPECTED_METHOD_SHA:
         raise ValueError(
-            "Splash-ad dispatch method differs from the verified REDnote 9.48.1 input"
+            "Splash-ad dispatch method differs from the verified REDnote input"
         )
     if original.count(AD_BRANCH) != 1 or original.count(QUERY_CALL) != 1:
         raise ValueError("Unexpected splash-ad dispatch branch layout")
@@ -125,7 +126,7 @@ def verify_compiled_splash_patch(apk: Path) -> dict:
         opcode = unit & 0xFF
         if opcode in (0x6E, 0x6F, 0x70, 0x71, 0x72, 0x74, 0x75, 0x76, 0x77, 0x78):
             method = dex.method_id(units[position + 1])
-            if method == ("Lqe/o;", "c", "()Z"):
+            if method == ("Lwe/o;", "c", "()Z"):
                 query_positions.append(position)
             if method == FUNCTION1_INVOKE and opcode in (0x72, 0x78):
                 callback_count += 1

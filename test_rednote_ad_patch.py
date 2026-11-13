@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from rednote_ad_patch import HIDE, RESTORE, SUPER_BIND, patch_feed_bind
+from rednote_ad_patch import HIDE, PROTO, RESTORE, SUPER_BIND, patch_feed_bind
 
 
 class FeedAdPatchTests(unittest.TestCase):
@@ -10,7 +10,7 @@ class FeedAdPatchTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "FeedCustomMultiTypeAdapter.smali"
-        self.source = (Path(__file__).parent / "tests/fixtures/rednote_9481_feed_bind.smali").read_text()
+        self.source = (Path(__file__).parent / "tests/fixtures/rednote_9540_feed_bind.smali").read_text()
         self.path.write_text(self.source)
 
     def test_keeps_all_original_binding_code_and_registers(self):
@@ -18,7 +18,10 @@ class FeedAdPatchTests(unittest.TestCase):
         patched = self.path.read_text()
         self.assertEqual(patched.replace(RESTORE, "").replace(HIDE, ""), self.source)
         self.assertEqual(patched.count(SUPER_BIND), 1)
-        self.assertEqual(patched.count("    .locals 4\n"), 1)
+        bind = patched.split(".method public onBindViewHolder" + PROTO + "\n", 1)[1].split(
+            ".end method", 1
+        )[0]
+        self.assertEqual(bind.count("    .locals 4\n"), 1)
         self.assertLess(patched.index(RESTORE), patched.index(SUPER_BIND))
         self.assertLess(patched.index(SUPER_BIND), patched.index(HIDE))
         self.assertTrue(audit["originalBindPreserved"])

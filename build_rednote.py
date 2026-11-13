@@ -44,7 +44,11 @@ from rednote_function_switch_download_patch import (
     patch_image_download_switch,
     verify_compiled_image_download_switch,
 )
-from rednote_splash_ad_patch import patch_splash_ad_dispatch, verify_compiled_splash_patch
+from rednote_splash_ad_patch import (
+    DISPATCH_CLASS,
+    patch_splash_ad_dispatch,
+    verify_compiled_splash_patch,
+)
 from rednote_im_diag_patch import (
     build_im_diag_dex,
     install_im_diag,
@@ -965,56 +969,143 @@ def patch_boolean_method(path: Path, method_name: str, value: bool = True) -> No
     path.write_text(updated, encoding="utf-8", newline="\n")
 
 
+# The release runs the clone under the source process label, so the app's own
+# main-process predicate must keep recognising the source package. Both known builds
+# decide it by comparing the current process name against a package literal:
+#   9.48.1: ``ddc/b.b`` vs literal inside ``ddc/a.invoke()``
+#   9.54.0: process-type enum assignment inside an obfuscated helper, four branches
+#           after a ``o7c/g1.b``-style field write.
+# Locate it structurally: a method that both compares the literal through
+# ``Intrinsics`` and stores a process-type object, then rewrite that one literal.
+MAIN_PROCESS_GATE_TARGET_FIELDS = (
+    "Lo7c/g1;->b:Lo7c/g1$c;",   # 9.54.0 process-type enum
+    "Lddc/b;->b:Ljava/lang/String;",  # 9.48.1 process-name holder
+)
+
+
+def find_main_process_gate(decoded_dir: Path, old_package: str) -> tuple[Path, str, str]:
+    """Return (smali path, method signature, class descriptor) of the process gate."""
+    literal_pattern = re.compile(
+        rf'(?m)^\s*const-string(?:/jumbo)?\s+[vp]\d+,\s*"{re.escape(old_package)}"\s*$'
+    )
+    compare_pattern = re.compile(
+        r"Lkotlin/jvm/internal/Intrinsics;->(?:areEqual|f)"
+        r"\(Ljava/lang/Object;Ljava/lang/Object;\)Z"
+    )
+    candidates: list[tuple[Path, str, str]] = []
+
+    for path in sorted(decoded_dir.glob("smali*/**/*.smali")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if f'"{old_package}"' not in text:
+            continue
+        for match in literal_pattern.finditer(text):
+            before = text[: match.start()]
+            headers = [m for m in re.finditer(r"(?m)^\.method[^\n]*$", before)]
+            if not headers:
+                continue
+            header = headers[-1].group()
+            end_index = text.find("\n.end method", match.start())
+            if end_index < 0:
+                continue
+            body = text[match.start():end_index]
+            if not compare_pattern.search(body):
+                continue
+            # A process gate also stores the resolved process type; a bare package
+            # comparison elsewhere in the app is not a main-process predicate.
+            if not any(field in body for field in MAIN_PROCESS_GATE_TARGET_FIELDS):
+                continue
+            class_match = re.search(r"(?m)^\.class[^\n]*?\s(L[^;\s]+;)\s*$", text)
+            if not class_match:
+                continue
+            parts = header.split()
+            candidates.append((path, parts[-1] if parts else "", class_match.group(1)))
+
+    if len(candidates) != 1:
+        raise BuildError(
+            "Expected exactly one main-process process-type gate against "
+            f"{old_package!r}; found {len(candidates)}: "
+            + ", ".join(f"{p.name}:{sig}" for p, sig, _ in candidates[:5])
+        )
+    return candidates[0]
+
+
 def patch_main_process_package_gate(
-    path: Path, old_package: str, new_package: str, *, preserve_original: bool = False
+    path: Path, old_package: str, new_package: str, *, preserve_original: bool = False,
+    signature: str | None = None,
 ) -> dict[str, str]:
     """Validate the pinned process predicate, preserving or rebasing its name.
 
-    Rednote 9.48.1 stores its current process name in ``ddc/b.b`` and compares
-    that value to the source package in ``ddc/a.invoke()``. After a package
-    clone, Android names the default process after the new package, so the app
-    otherwise takes its subprocess initialization path in the main process.
-    The preserve mode pairs the original predicate with an explicit source
-    application process label. Other source-package literals may be external
-    protocol names or SDK configuration and are left alone.
+    Android names the default process after the installed package, so a clone that
+    keeps the original predicate without an explicit process label takes its
+    subprocess initialization path in the main process. The preserve mode pairs the
+    untouched predicate with an application-level source process label, which is
+    the shipped configuration; rebase mode rewrites the single literal instead.
     """
     if old_package == new_package:
         raise BuildError("Main-process package gate does not need rebasing")
 
     text = path.read_text(encoding="utf-8")
-    if not re.search(r"(?m)^\.class[^\n]*\sLddc/a;\s*$", text):
-        raise BuildError(f"Expected ddc/a class in {path}")
+    class_match = re.search(r"(?m)^\.class[^\n]*?\s(L[^;\s]+;)\s*$", text)
+    if not class_match:
+        raise BuildError(f"Could not resolve the gate class in {path}")
+    class_descriptor = class_match.group(1)
 
+    if signature is None:
+        # Derive the enclosing method that holds the single source-package comparison.
+        literal = re.escape(old_package)
+        found: list[str] = []
+        for literal_match in re.finditer(rf'(?m)^\s*const-string(?:/jumbo)?\s+[vp]\d+,\s*"{literal}"\s*$', text):
+            window = text[literal_match.end():literal_match.end() + 600]
+            if not re.search(
+                r"Lkotlin/jvm/internal/Intrinsics;->(?:areEqual|f)"
+                r"\(Ljava/lang/Object;Ljava/lang/Object;\)Z",
+                window,
+            ):
+                continue
+            before = text[:literal_match.start()]
+            headers = [m for m in re.finditer(r"(?m)^\.method[^\n]*$", before)]
+            if not headers:
+                continue
+            header = headers[-1].group().strip()
+            parts = header.split()
+            found.append(parts[-1] if parts else "")
+        if len(found) != 1:
+            raise BuildError(
+                f"Could not derive a unique main-process gate signature in {path}; found {len(found)}"
+            )
+        signature = found[0]
+
+    method_name = signature.split("(", 1)[0]
+    proto = "(" + signature.split("(", 1)[1] if "(" in signature else ""
     method_re = re.compile(
-        r"(?ms)^(\.method[^\n]*\binvoke\(\)Ljava/lang/Object;[^\n]*\n)"
-        r"(.*?)"
+        rf"(?ms)^(\.method[^\n]*\s{re.escape(method_name)}{re.escape(proto)}[^\n]*\n)"
+        r"(?P<body>.*?)"
         r"(^\.end method\s*$)"
     )
     matches = list(method_re.finditer(text))
     if len(matches) != 1:
         raise BuildError(
-            f"Expected one ddc/a.invoke()Ljava/lang/Object; method in {path}; found {len(matches)}"
+            f"Expected one {method_name}{proto} method in {path}; found {len(matches)}"
         )
 
     match = matches[0]
-    body = match.group(2)
+    body = match.group("body")
     old_literal = re.escape(old_package)
     predicate = re.compile(
-        rf"(?ms)sget-object\s+(?P<process_register>[vp]\d+),\s*"
-        rf"Lddc/b;->b:Ljava/lang/String;.*?"
-        rf"const-string\s+(?P<package_register>[vp]\d+),\s*\"{old_literal}\".*?"
-        rf"invoke-static\s*\{{\s*(?P=process_register)\s*,\s*"
-        rf"(?P=package_register)\s*\}},\s*"
-        r"Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z"
+        rf"(?ms)^\s*const-string(?:/jumbo)?\s+(?P<package_register>[vp]\d+),\s*"
+        rf"\"{old_literal}\"\s*$.*?"
+        r"invoke-static\s*\{[^}]*\},\s*"
+        r"Lkotlin/jvm/internal/Intrinsics;->(?:areEqual|f)"
+        r"\(Ljava/lang/Object;Ljava/lang/Object;\)Z"
     )
     predicate_matches = list(predicate.finditer(body))
     if len(predicate_matches) != 1:
         raise BuildError(
             "Expected exactly one source-package main-process comparison in "
-            f"ddc/a.invoke(); found {len(predicate_matches)}"
+            f"{class_descriptor}->{signature}; found {len(predicate_matches)}"
         )
 
-    literal_re = re.compile(rf'(?m)^(\s*const-string\s+[vp]\d+,\s*)"{old_literal}"(\s*)$')
+    literal_re = re.compile(rf'(?m)^(\s*const-string(?:/jumbo)?\s+[vp]\d+,\s*)"{old_literal}"(\s*)$')
     expected_process = old_package if preserve_original else new_package
     updated_body, replacement_count = literal_re.subn(
         lambda found: found.group(1) + '"' + expected_process + '"' + found.group(2),
@@ -1022,15 +1113,16 @@ def patch_main_process_package_gate(
     )
     if replacement_count != 1:
         raise BuildError(
-            f"Expected one {old_package!r} literal in ddc/a.invoke(); found {replacement_count}"
+            f"Expected one {old_package!r} literal in {class_descriptor}->{signature}; "
+            f"found {replacement_count}"
         )
 
-    updated = text[: match.start(2)] + updated_body + text[match.end(2) :]
+    updated = text[: match.start("body")] + updated_body + text[match.end("body") :]
     if not preserve_original:
         path.write_text(updated, encoding="utf-8", newline="\n")
     audit = {
-        "class": "ddc.a",
-        "method": "invoke()Ljava/lang/Object;",
+        "class": class_descriptor.strip("L;").replace("/", "."),
+        "method": signature,
         "sourceProcessName": old_package,
         "cloneProcessName": new_package,
     }
@@ -1611,11 +1703,15 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             wechat_dex = dex_name_for_smali(decoded_dir, wechat_sender)
             wechat_share_audit["touchedDexEntry"] = wechat_dex
             touched_dex_names.add(wechat_dex)
-        process_gate_path = find_smali_class(decoded_dir, "ddc.a")
+        process_gate_path, process_gate_signature, process_gate_class = find_main_process_gate(
+            decoded_dir, old_package
+        )
         process_gate_audit = patch_main_process_package_gate(
             process_gate_path, old_package, application_id,
             preserve_original=args.keep_original_main_process,
+            signature=process_gate_signature,
         )
+        process_gate_audit["class"] = process_gate_class
         process_gate_dex = dex_name_for_smali(decoded_dir, process_gate_path)
         if not args.keep_original_main_process:
             touched_dex_names.add(process_gate_dex)
@@ -1813,7 +1909,9 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         splash_ad_audit: dict[str, Any] = {"enabled": False}
         if args.skip_splash_ads:
             try:
-                splash_smali = find_smali_class(decoded_dir, "uy.f")
+                splash_smali = find_smali_class(
+                    decoded_dir, DISPATCH_CLASS
+                )
                 splash_ad_audit = {"enabled": True, **patch_splash_ad_dispatch(splash_smali)}
                 splash_touched_dex = dex_name_for_smali(decoded_dir, splash_smali)
                 touched_dex_names.add(splash_touched_dex)
@@ -1866,14 +1964,13 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                     "enabled": True,
                     **patch_image_download_switch(function_switch_smali),
                 }
+                # FunctionSwitch does not have to live in the same DEX as MediaSaveConfig:
+                # 9.54.0 moved it to classes13.dex while MediaSaveConfig stayed in classes12.dex.
                 function_switch_touched_dex = dex_name_for_smali(
                     decoded_dir, function_switch_smali
                 )
-                if function_switch_touched_dex != download_unlock_touched_dex:
-                    raise BuildError(
-                        "Download unlock patches unexpectedly target different DEX entries"
-                    )
                 function_switch_unlock_audit["touchedDexEntry"] = function_switch_touched_dex
+                touched_dex_names.add(function_switch_touched_dex)
 
                 warnings.append(
                     "--allow-disabled-downloads returns the normal save/download path for "

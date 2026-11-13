@@ -15,7 +15,7 @@ class SettingsActivityPatchTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "SettingActivityV2.smali"
         self.source = (
-            Path(__file__).parent / "tests/fixtures/rednote_9481_settings_oncreate.smali"
+            Path(__file__).parent / "tests/fixtures/rednote_9540_settings_oncreate.smali"
         ).read_text()
         self.path.write_text(self.source)
 
@@ -58,7 +58,7 @@ class FeedKeywordHookTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "FeedCustomMultiTypeAdapter.smali"
         self.path.write_text(
-            (Path(__file__).parent / "tests/fixtures/rednote_9481_feed_bind.smali").read_text()
+            (Path(__file__).parent / "tests/fixtures/rednote_9540_feed_bind.smali").read_text()
         )
         patch_feed_bind(self.path)
 
@@ -92,7 +92,7 @@ class FeedKeywordHookTests(unittest.TestCase):
 
     def test_requires_the_ad_display_hook(self):
         self.path.write_text(
-            (Path(__file__).parent / "tests/fixtures/rednote_9481_feed_bind.smali").read_text()
+            (Path(__file__).parent / "tests/fixtures/rednote_9540_feed_bind.smali").read_text()
         )
         with self.assertRaisesRegex(ValueError, "display hook"):
             module.patch_feed_keyword_filter(self.path)
@@ -126,7 +126,7 @@ class SourceShapeTests(unittest.TestCase):
         # appear in the Java sources; the binder lives in smali for that reason.
         for name, body in module.JAVA_SOURCES.items():
             self.assertNotIn("import androidx", body, f"{name} must not import androidx")
-        self.assertIn("Lba/d;", module.SMALI_CLASSES["BlockBinder.smali"])
+        self.assertIn(module.BINDER_BASE, module.SMALI_CLASSES["BlockBinder.smali"])
         self.assertIn("RecyclerView$ViewHolder", module.SMALI_CLASSES["BlockViewHolder.smali"])
 
 

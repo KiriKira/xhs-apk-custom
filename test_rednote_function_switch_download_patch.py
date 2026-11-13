@@ -16,7 +16,7 @@ class ImageDownloadSwitchPatchTests(unittest.TestCase):
         self.path = Path(self.temp.name) / "FunctionSwitch.smali"
         self.source = (
             Path(__file__).parent
-            / "tests/fixtures/rednote_9481_function_switch.smali"
+            / "tests/fixtures/rednote_9540_function_switch.smali"
         ).read_text()
         self.path.write_text(self.source)
 

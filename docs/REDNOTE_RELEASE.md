@@ -5,18 +5,18 @@ The REDnote build is independent of the domestic `build_xhs.py` workflow and rel
 | | Domestic XHS | REDnote |
 | --- | --- | --- |
 | Package | `com.xingin.xhs` | `com.kirikira.rednote.fold` |
-| Source versionCode | `9334801` | `9481803` (9.48.1) |
+| Source versionCode | `9334801` | `9540804` (9.54.0) |
 | APK asset | `xhs-fold8-custom.apk` | `rednote-fold-custom.apk` |
-| Release tag | `v1.0.0` | `rednote-v9.48.1-9` (stable: 小K书 icon, ads hidden, splash ad skipped, author-disabled downloads unlocked, package compatibility, WeChat sharing); `rednote-v9.48.1-8` (previous stable) |
+| Release tag | `v1.0.0` | `rednote-v9.54.0-*` (小K书 icon, ads hidden, splash ad skipped, author-disabled downloads unlocked, package compatibility, WeChat sharing); `rednote-v9.48.1-17` is the previous 9.48.1 line |
 | Workflow | `build-xhs.yml` | `build-rednote.yml` |
 
 Both outputs use the repository's existing `ks_pkcs12.keystore`, alias `jhc`. The actual APK signer SHA-256 is `637c226c67aec0cdbc6f49cd476d5247f999122606286273e16233a913a088b4`, independently verified against the domestic v1.0.0 release APK.
 
 ## Source and patches
 
-The source is APKPure's REDnote 9.48.1 ARM64 XAPK, not a direct Google Play download:
+The source is APKPure's REDnote 9.54.0 ARM64 XAPK, not a direct Google Play download:
 
-https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9481803&nc=arm64-v8a&sv=21
+https://d.apkpure.net/b/XAPK/com.xingin.xhs?versionCode=9540804
 
 Pinned XAPK SHA-256: `bbc6e888f0084336418ea07e05bda4723d8b01a36879fe054d050deec0a5c8b0`.
 All three APK members are verified before merging. Their signing certificate SHA-256 is `dbf2ddfe68dc6c3d7bdbd1c70aae13993f50fa99b51d6f0c668a284ee9e6fdcd`; their verified Google source-stamp certificate is reported separately. This input certificate differs from the domestic source's certificate.
@@ -52,7 +52,7 @@ The author-disabled download patch (`--allow-disabled-downloads`) enables the ex
 
 ## Versioning and rollback
 
-Android blocks a lower `versionCode` during ordinary installation. Both REDnote revisions deliberately keep `versionCode=9481803` and `versionName=9.48.1`; only the Release tags count patch revisions. The package ID and cryptographic signing identity also remain identical. This allows direct replacement in either direction instead of uninstalling the app.
+Android blocks a lower `versionCode` during ordinary installation. Each REDnote build line keeps the upstream `versionCode`/`versionName` of the base it was ported to (`9540804` / `9.54.0` for the current line); only the Release tags count patch revisions. The package ID and cryptographic signing identity remain identical across lines, so a 9.54.0 build upgrades in place over a 9.48.1 build without an uninstall, and rolling back means reinstalling an official or older REDnote APK with the same package.
 
 - Stable revision with the 小K书 launcher icon, ad-display patch, splash-ad skip, author-disabled download unlock, package compatibility fix and WeChat sharing: `rednote-v9.48.1-9`.
 - Previous stable build without the function-switch/share-entry unlock: `rednote-v9.48.1-8`.
@@ -76,3 +76,30 @@ overlay rollback.
 Run **Build and Release REDnote Fold Custom** manually. `publish: true` publishes after build validation; `publish: false` only builds. The `prerelease` input defaults to `true` to preserve the prior behavior; set it to `false` to publish a stable release. `hide_feed_ads` controls the discovery-feed display patch, `skip_splash_ads` controls the cold-start splash-ad skip, and publishing requires both to be enabled. Each build uses the pinned XAPK and current package-compatibility configuration. Choose a fresh `rednote-v9.48.1-<revision>` tag. Relevant main-branch changes build without publishing, and `rednote-v*` tag pushes publish as pre-releases.
 
 The workflow publishes the APK, build report and `SHA256SUMS`. It refuses to replace an existing release's assets and always uses `--latest=false` to preserve the domestic release's Latest designation. No rollback VM, phone number, or SMS code is required by the production build or included in release assets.
+
+## 9.54.0 port (versionCode 9540804)
+
+The 9.54.0 port keeps every patch from the 9.48.1 line but had to relocate each anchor,
+because obfuscated names and class-to-DEX layout changed between builds:
+
+| Patch | 9.48.1 anchor | 9.54.0 anchor |
+| --- | --- | --- |
+| Fold layout gates | `DeviceInfoContainer` in `classes4.dex` | same class, now in `classes3.dex` |
+| Feed ad display | `FeedCustomMultiTypeAdapter.onBindViewHolder`, item list `B0()` | same method, item list `A0()` |
+| Splash ad skip | `uy.f.a(qe.o, …)` | `qz.f.a(we/o, …)`, no-ad marker `Lc00/f;` |
+| Author-disabled download | `MediaSaveConfig.d()` | `MediaSaveConfig.b()` |
+| Share-panel download | `ShareInfoDetail$Operate.b()` | `ShareInfoDetail$Operate.a()` |
+| Image-download switch | `FunctionSwitch.b()` in `classes12.dex` | `FunctionSwitch.a()`, now in `classes13.dex` |
+| Keyword-block settings | `SettingActivityV2.onCreate` via `Rd` | same method via `Vd`; binder base `Lha/d;` |
+| WeChat share identity | `MMessageActV2.send` in `classes4.dex` | same method in `classes3.dex` (unchanged bytecode) |
+| Signature compat hook | `XhsApplication` in `classes17.dex` | same class, now in `classes19.dex` |
+| Main-process gate | `ddc/a.invoke()` comparing `ddc/b.b` | process-type enum assignment in an obfuscated helper |
+
+The main-process gate is now located structurally (a method that both compares the
+package literal through `Intrinsics` and stores a process-type value) instead of by
+class name, and the release verifier asserts that no comparison was rebased onto the
+clone package. The fold-layout claim is unchanged: 9.54.0 carries the same
+`android_folder_device_list` allow-list and the same device model lists as 9.48.1, so
+forcing `isHorizontalFolderDevice()` and `isPad()` remains necessary for
+international/Japanese Z Fold8 units (`SM-F971B`/`SM-F976B` are absent from the list
+while the mainland `SM-F9710`/`SM-F9760` are present).

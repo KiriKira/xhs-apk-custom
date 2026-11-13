@@ -435,18 +435,24 @@ def verify_signature_compat(
             dex_names = _dex_entries(names)
             if len(dex_names) != len(set(dex_names)):
                 raise VerificationError("APK has duplicate DEX entry names")
-            if "classes17.dex" not in dex_names:
-                raise VerificationError("classes17.dex is missing")
             dex_files = {name: DexFile(archive.read(name), name) for name in dex_names}
     except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
         if isinstance(exc, VerificationError):
             raise
         raise VerificationError(f"APK or DEX data could not be read ({type(exc).__name__})") from None
 
-    application_dex = dex_files["classes17.dex"]
-    application_definition = _one_class(application_dex, APPLICATION_CLASS)
-    if application_definition is None:
-        raise VerificationError("XhsApplication is missing from classes17.dex")
+    # The application class is not pinned to one DEX entry: it moved from
+    # classes17.dex (9.48.1) to classes19.dex (9.54.0), so locate it by descriptor.
+    application_locations = [
+        (name, dex, definition)
+        for name, dex in dex_files.items()
+        if (definition := _one_class(dex, APPLICATION_CLASS)) is not None
+    ]
+    if len(application_locations) != 1:
+        raise VerificationError(
+            f"expected one {APPLICATION_CLASS} definition, found {len(application_locations)}"
+        )
+    application_dex_name, application_dex, application_definition = application_locations[0]
     application_data = application_dex.class_data(application_definition["class_data_off"])
     application_methods = list(application_data["direct_methods"]) + list(application_data["virtual_methods"])
     startup_methods = []
@@ -478,7 +484,7 @@ def verify_signature_compat(
     if len(helper_locations) != 1:
         raise VerificationError(f"expected one SignatureSpoof helper class, found {len(helper_locations)}")
     helper_dex_name, helper_dex, helper_definition = helper_locations[0]
-    if helper_dex_name in {"classes.dex", "classes17.dex"} or int(helper_dex_name[7:-4]) < 2:
+    if helper_dex_name == "classes.dex" or helper_dex_name == application_dex_name or int(helper_dex_name[7:-4]) < 2:
         raise VerificationError("SignatureSpoof helper must live in a separate numbered classesN.dex")
 
     helper_data = helper_dex.class_data(helper_definition["class_data_off"])
@@ -523,7 +529,7 @@ def verify_signature_compat(
         "ok": True,
         "apk": apk_path.name,
         "package": actual_package,
-        "applicationDex": "classes17.dex",
+        "applicationDex": application_dex_name,
         "applicationClass": APPLICATION_CLASS,
         "startupMethod": "attachBaseContext(Landroid/content/Context;)V",
         "firstInstruction": first_opcode,

@@ -1,8 +1,11 @@
 import struct, zipfile
 
+# DeviceInfoContainer moved from classes4.dex (9.48.1) to classes3.dex (9.54.0).
+DEX_ENTRY = 'classes3.dex'
+
 def verify_fold_gates(apk):
     with zipfile.ZipFile(apk) as z:
-        dex = z.read('classes4.dex')
+        dex = z.read(DEX_ENTRY)
     def u32(offset): return struct.unpack_from('<I', dex, offset)[0]
     def uleb(offset):
         value=shift=0
@@ -40,6 +43,6 @@ def verify_fold_gates(apk):
                 count=u32(code+12)
                 instructions=list(struct.unpack_from('<'+'H'*count,dex,code+16))
                 assert instructions==[0x1012,0x000f], (method_name,instructions)
-                found[method_name]={'dex':'classes4.dex','instructions':['const/4 v0, 1','return v0'],'returnsTrue':True}
+                found[method_name]={'dex':DEX_ENTRY,'instructions':['const/4 v0, 1','return v0'],'returnsTrue':True}
     assert len(found)==2, found
     return found

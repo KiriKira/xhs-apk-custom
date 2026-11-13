@@ -30,24 +30,28 @@ from rednote_signature_compat import _resolve_android_jar, _resolve_d8, _run
 
 SETTINGS_ACTIVITY = "com.xingin.matrix.setting.SettingActivityV2"
 SETTINGS_ACTIVITY_DESCRIPTOR = "Lcom/xingin/matrix/setting/SettingActivityV2;"
+# Obfuscated per build: the MultiType binder base was ``Lba/d;`` in 9.48.1 and is
+# ``Lha/d;`` in 9.54.0 once ``Lha/c`` re-chains through it.
+BINDER_BASE = "Lha/d;"
 ACTIVITY_CLASS = "dev.kiri.xhsads.BlockWordsActivity"
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
+# Obfuscated per build: 9.48.1 routed through ``Rd``, 9.54.0 through ``Vd``.
 SETTINGS_ACTIVITY_LAUNCH = (
     "    invoke-static {p0, p1}, Lcom/xingin/matrix/setting/SettingActivityV2;->"
-    "Rd(Lcom/xingin/matrix/setting/SettingActivityV2;Landroid/os/Bundle;)V\n"
+    "Vd(Lcom/xingin/matrix/setting/SettingActivityV2;Landroid/os/Bundle;)V\n"
 )
 SETTINGS_ACTIVITY_HOOK = (
     "\n    invoke-static {p0}, Ldev/kiri/xhsads/SettingsHook;->"
     "install(Landroid/app/Activity;)V\n"
 )
 # Pinned sha256 of ``SettingActivityV2.onCreate(Landroid/os/Bundle;)V`` in the
-# verified REDnote 9.48.1 (9481803) APKEditor 1.4.9 / jf decode.
+# verified REDnote 9.54.0 (9540804) APKEditor 1.4.9 / jf decode.
 EXPECTED_ONCREATE_SHA = (
-    "d4a351a1a8ba752f9c132003b856c918731e14d992643c4ae2f765cf16fd86f3"
+    "8bb0cd2b04dd64efafad5a9ceaf3cd223946b4e4910184dcd3a0d6bbd3fdc4df"
 )
 # Pinned sha256 of ``SettingActivityV2.onWindowFocusChanged(Z)V`` (same decode).
 EXPECTED_FOCUS_SHA = (
-    "5692c55dba6314c0ad5cc5b1249bde79f32d8ab7eb7eebdb59b5f8778c62b7d1"
+    "2ac8ed934ffa498b8dcaecfed9c9c76dcac563d9b91995ae4630e768fbc9807e"
 )
 FOCUS_SUPER_CALL = (
     "    invoke-super {p0, p1}, Lcom/xingin/foundation/framework/v2/LCBActivity;->"
@@ -58,6 +62,8 @@ FOCUS_ENSURE_HOOK = (
     "ensure(Landroid/app/Activity;)V\n"
 )
 
+# Must match ``rednote_ad_patch.HIDE`` byte for byte, including the item-list
+# accessor name (``A0()`` in 9.54.0, ``B0()`` in 9.48.1).
 FEED_APPLY_BLOCK = (
     "    :rednote_feed_ad_apply\n"
     "    iget-object v0, p1, Landroidx/recyclerview/widget/RecyclerView$ViewHolder;->"
@@ -94,14 +100,14 @@ SMALI_CLASSES = {
 .end method
 """,
     "BlockBinder.smali": r""".class public final Ldev/kiri/xhsads/BlockBinder;
-.super Lba/d;
+.super Lha/d;
 
 
 # direct methods
 .method public constructor <init>()V
     .locals 0
 
-    invoke-direct {p0}, Lba/d;-><init>()V
+    invoke-direct {p0}, Lha/d;-><init>()V
 
     return-void
 .end method
@@ -1083,7 +1089,7 @@ def patch_settings_activity(smali_path: Path) -> dict:
     match = methods[0]
     original = match.group()
     if hashlib.sha256(original.encode()).hexdigest() != EXPECTED_ONCREATE_SHA:
-        raise ValueError("Settings activity onCreate differs from the verified REDnote 9.48.1 input")
+        raise ValueError("Settings activity onCreate differs from the verified REDnote input")
     if original.count(SETTINGS_ACTIVITY_LAUNCH) != 1:
         raise ValueError("Unexpected settings activity onCreate layout")
     patched = original.replace(SETTINGS_ACTIVITY_LAUNCH, SETTINGS_ACTIVITY_LAUNCH + SETTINGS_ACTIVITY_HOOK, 1)
@@ -1095,7 +1101,7 @@ def patch_settings_activity(smali_path: Path) -> dict:
     focus_match = focus[0]
     focus_original = focus_match.group()
     if hashlib.sha256(focus_original.encode()).hexdigest() != EXPECTED_FOCUS_SHA:
-        raise ValueError("Settings activity onWindowFocusChanged differs from the verified REDnote 9.48.1 input")
+        raise ValueError("Settings activity onWindowFocusChanged differs from the verified REDnote input")
     if focus_original.count(FOCUS_SUPER_CALL) != 1:
         raise ValueError("Unexpected settings activity onWindowFocusChanged layout")
     focus_patched = focus_original.replace(
@@ -1230,7 +1236,7 @@ def verify_compiled_settings_hook(apk: Path, settings_dex: str) -> dict:
             raise ValueError(f"{settings_dex} is missing helper class {descriptor}")
 
     binder = dex.class_definitions("Ldev/kiri/xhsads/BlockBinder;")[0]
-    if _superclass_descriptor(dex, binder["descriptor"]) != "Lba/d;":
+    if _superclass_descriptor(dex, binder["descriptor"]) != BINDER_BASE:
         raise ValueError("BlockBinder does not extend the verified MultiType binder base")
 
     definitions = dex.class_definitions(SETTINGS_ACTIVITY_DESCRIPTOR)
@@ -1263,7 +1269,7 @@ def verify_compiled_settings_hook(apk: Path, settings_dex: str) -> dict:
         "entryHook": True,
         "refreshHook": True,
         "binderClass": "Ldev/kiri/xhsads/BlockBinder;",
-        "binderBase": "Lba/d;",
+        "binderBase": BINDER_BASE,
     }
 
 

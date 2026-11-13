@@ -16,7 +16,7 @@ class SharePanelDownloadPatchTests(unittest.TestCase):
         self.path = Path(self.temp.name) / "ShareInfoDetail$Operate.smali"
         self.source = (
             Path(__file__).parent
-            / "tests/fixtures/rednote_9481_share_operate.smali"
+            / "tests/fixtures/rednote_9540_share_operate.smali"
         ).read_text()
         self.path.write_text(self.source)
 

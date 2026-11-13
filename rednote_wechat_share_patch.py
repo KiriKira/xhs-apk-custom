@@ -22,7 +22,8 @@ COMMAND_KEY = "_wxapi_command_type"
 TARGET_CLASS = "Lcom/tencent/mm/opensdk/channel/MMessageActV2;"
 TARGET_METHOD = "send"
 TARGET_PROTO = "(Landroid/content/Context;Lcom/tencent/mm/opensdk/channel/MMessageActV2$Args;)Z"
-TARGET_DEX = "classes4.dex"
+# The opensdk sender moved from classes4.dex (9.48.1) to classes3.dex (9.54.0).
+TARGET_DEX = "classes3.dex"
 METHOD_PATTERN = (
     r"^\.method public static send\(Landroid/content/Context;"
     r"Lcom/tencent/mm/opensdk/channel/MMessageActV2\$Args;\)Z\n"

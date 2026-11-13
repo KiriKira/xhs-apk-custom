@@ -1,75 +1,115 @@
-import struct
+"""Verify the release preserves the source main-process name comparison.
+
+The gate no longer lives in a fixed class: 9.48.1 stored the process name in
+``ddc/b.b`` and compared it in ``ddc/a.invoke()``; 9.54.0 resolves a process-type
+enum inside an obfuscated helper. Both compile the same shape -- load the package
+literal, compare it through ``Intrinsics`` -- so the check locates the comparison
+by shape instead of by name.
+
+Release builds keep the source application process label, so every app-local
+process-name comparison must still name the source package and none may point at
+the clone package.
+"""
+
+import sys
 import zipfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from verify_rednote_signature_compat import DexFile  # noqa: E402
+
+INTRINSICS_TARGETS = {
+    ("Lkotlin/jvm/internal/Intrinsics;", "areEqual",
+     "(Ljava/lang/Object;Ljava/lang/Object;)Z"),
+    ("Lkotlin/jvm/internal/Intrinsics;", "f",
+     "(Ljava/lang/Object;Ljava/lang/Object;)Z"),
+}
+INVOKE_STATIC_OPCODES = (0x71, 0x77)
 
 
-def verify_process_gate(apk, expected_package):
-    with zipfile.ZipFile(apk) as archive:
-        dex = archive.read('classes17.dex')
-    def u32(offset):
-        return struct.unpack_from('<I', dex, offset)[0]
-    def uleb(offset):
-        value = shift = 0
-        while True:
-            byte = dex[offset]
-            offset += 1
-            value |= (byte & 127) << shift
-            if byte < 128:
-                return value, offset
-            shift += 7
-    def string(index):
-        offset = u32(u32(60) + 4 * index)
-        _, offset = uleb(offset)
-        return dex[offset:dex.index(b'\0', offset)].decode('utf-8', errors='replace')
-    def descriptor(index):
-        return string(u32(u32(68) + 4 * index))
-    def method(index):
-        cls, proto, name = struct.unpack_from('<HHI', dex, u32(92) + 8 * index)
-        return descriptor(cls), string(name)
-    def field(index):
-        cls, typ, name = struct.unpack_from('<HHI', dex, u32(84) + 8 * index)
-        return descriptor(cls), string(name), descriptor(typ)
-    class_data = None
-    for index in range(u32(96)):
-        offset = u32(100) + 32 * index
-        if descriptor(u32(offset)) == 'Lddc/a;':
-            class_data = u32(offset + 24)
-            break
-    assert class_data, 'ddc.a missing'
-    sizes = []
-    offset = class_data
-    for _ in range(4):
-        value, offset = uleb(offset)
-        sizes.append(value)
-    for _ in range(sizes[0] + sizes[1]):
-        _, offset = uleb(offset)
-        _, offset = uleb(offset)
-    matched = []
-    for count in sizes[2:]:
-        method_index = 0
-        for _ in range(count):
-            delta, offset = uleb(offset)
-            method_index += delta
-            _, offset = uleb(offset)
-            code, offset = uleb(offset)
-            if method(method_index) != ('Lddc/a;', 'invoke'):
+def _comparisons(dex: DexFile, literals: set[str]) -> list[dict]:
+    """Return every package-literal comparison through ``Intrinsics`` in this DEX.
+
+    Instruction widths come from the shared DEX parser so a jumbo string or a wide
+    instruction cannot desynchronise the walk.
+    """
+    hits: list[dict] = []
+    for definition in range(dex.class_count):
+        offset = dex.class_off + definition * 32
+        class_descriptor = dex.type_descriptor(dex.u32(offset))
+        class_data = dex.u32(offset + 24)
+        if not class_data:
+            continue
+        data = dex.class_data(class_data)
+        methods = list(data["direct_methods"]) + list(data["virtual_methods"])
+        for entry in methods:
+            if len(entry) != 3:
                 continue
-            assert code, 'invoke has no code'
-            count = u32(code + 12)
-            units = struct.unpack_from('<' + 'H' * count, dex, code + 16)
-            for pos in range(len(units) - 6):
-                if units[pos] != 0x0062 or field(units[pos+1]) != ('Lddc/b;', 'b', 'Ljava/lang/String;'):
-                    continue
-                if units[pos+2] == 0x011a:
-                    literal = string(units[pos+3]); invoke_pos = pos+4
-                elif units[pos+2] == 0x011b:
-                    literal = string(units[pos+3] | units[pos+4] << 16); invoke_pos = pos+5
-                else:
-                    continue
-                if units[invoke_pos] != 0x2071 or units[invoke_pos+2] != 0x0010:
-                    continue
-                if method(units[invoke_pos+1]) != ('Lkotlin/jvm/internal/Intrinsics;', 'areEqual'):
-                    continue
-                matched.append(literal)
-    assert matched == [expected_package], matched
-    return {'dex': 'classes17.dex', 'class': 'ddc.a', 'method': 'invoke',
-            'processNameConstant': expected_package, 'exactPredicateCount': 1}
+            method_index, _access, code = entry[0], entry[1], entry[2]
+            if not code:
+                continue
+            insns_off, count = dex.code_info(code)
+            units = [dex.u16(insns_off + 2 * index) for index in range(count)]
+            method_id = dex.method_id(method_index)
+            position = 0
+            while position < len(units):
+                opcode = units[position] & 0xFF
+                literal = None
+                if opcode == 0x1A and position + 1 < len(units):
+                    literal = dex.string(units[position + 1])
+                elif opcode == 0x1B and position + 2 < len(units):
+                    literal = dex.string(units[position + 1] | (units[position + 2] << 16))
+                if literal in literals:
+                    scan = position
+                    limit = min(len(units), position + 16)
+                    while scan < limit:
+                        inner = units[scan] & 0xFF
+                        if inner in INVOKE_STATIC_OPCODES and scan + 1 < len(units):
+                            if dex.method_id(units[scan + 1]) in INTRINSICS_TARGETS:
+                                hits.append({
+                                    "class": class_descriptor,
+                                    "method": method_id,
+                                    "literal": literal,
+                                })
+                                break
+                        scan += dex._instruction_width(units, scan)
+                position += dex._instruction_width(units, position)
+    return hits
+
+
+def verify_process_gate(apk, expected_package, clone_package=None):
+    literals = {expected_package}
+    if clone_package:
+        literals.add(clone_package)
+
+    found: list[dict] = []
+    with zipfile.ZipFile(apk) as archive:
+        entries = [name for name in archive.namelist()
+                   if name.startswith("classes") and name.endswith(".dex")]
+        for entry in entries:
+            dex = DexFile(archive.read(entry), entry)
+            for hit in _comparisons(dex, literals):
+                found.append({**hit, "dex": entry})
+
+    source_hits = [item for item in found if item["literal"] == expected_package]
+    clone_hits = [item for item in found
+                  if clone_package and item["literal"] == clone_package]
+
+    if not source_hits:
+        raise ValueError(
+            f"No main-process name comparison against {expected_package!r} was found"
+        )
+    if clone_hits:
+        raise ValueError(
+            f"{len(clone_hits)} main-process name comparisons were rebased onto "
+            f"{clone_package!r}; the release must preserve the source process name"
+        )
+    return {
+        "verified": True,
+        "dex": sorted({item["dex"] for item in source_hits}),
+        "classes": sorted({item["class"] for item in source_hits}),
+        "processNameConstant": expected_package,
+        "sourcePackageComparisonCount": len(source_hits),
+        "clonePackageComparisonCount": 0,
+    }

@@ -2,7 +2,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from rednote_download_unlock_patch import ALLOWED_RETURN, DISABLED_FIELD_READ, patch_media_save_config
+from rednote_download_unlock_patch import (
+    ALLOWED_RETURN,
+    DISABLED_FIELD_READ,
+    METHOD,
+    patch_media_save_config,
+)
 
 
 class DownloadUnlockPatchTests(unittest.TestCase):
@@ -12,7 +17,7 @@ class DownloadUnlockPatchTests(unittest.TestCase):
         self.path = Path(self.temp.name) / "MediaSaveConfig.smali"
         self.source = (
             Path(__file__).parent
-            / "tests/fixtures/rednote_9481_media_save_config.smali"
+            / "tests/fixtures/rednote_9540_media_save_config.smali"
         ).read_text()
         self.path.write_text(self.source)
 
@@ -20,7 +25,7 @@ class DownloadUnlockPatchTests(unittest.TestCase):
         audit = patch_media_save_config(self.path)
         patched = self.path.read_text()
         self.assertEqual(patched, self.source.replace(DISABLED_FIELD_READ, ALLOWED_RETURN, 1))
-        getter = patched.split(".method public final d()Z", 1)[1].split(".end method", 1)[0]
+        getter = patched.split(f".method public final {METHOD}()Z", 1)[1].split(".end method", 1)[0]
         self.assertNotIn(DISABLED_FIELD_READ, getter)
         self.assertIn("disableSaveMedia:Z", patched)
         self.assertTrue(audit["disabledFlagBypassed"])

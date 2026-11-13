@@ -19,12 +19,16 @@ import zipfile
 
 CLASS = "com.xingin.entities.notedetail.FunctionSwitch"
 DESCRIPTOR = "Lcom/xingin/entities/notedetail/FunctionSwitch;"
-METHOD = "b"
+# Obfuscated per build: 9.48.1 exposed the enable getter as ``b()``, 9.54.0 as ``a()``.
+METHOD = "a"
 PROTO = "()Z"
 DOWNLOAD_TYPE = "image_download"
-EXPECTED_METHOD_SHA = "d4c07204691b2a6dd49e349e01c78decb89e43481da3fd6532137e66a5868689"
+# Class->DEX layout is not stable across builds; 9.54.0 moved this class to classes13.dex.
+DEX_ENTRY = "classes13.dex"
+# Pinned sha256 of ``FunctionSwitch.a()Z`` in REDnote 9.54.0 (9540804).
+EXPECTED_METHOD_SHA = "0afc8cb6b24c5c82bbf0c622d0f09ace250b886bfbb4be82fd3ea7f76103d047"
 ORIGINAL_BODY = (
-    ".method public final b()Z\n"
+    ".method public final a()Z\n"
     "    .locals 1\n"
     "\n"
     "    .line 1\n"
@@ -34,7 +38,7 @@ ORIGINAL_BODY = (
     ".end method"
 )
 PATCHED_BODY = (
-    ".method public final b()Z\n"
+    ".method public final a()Z\n"
     "    .locals 2\n"
     "\n"
     "    .line 1\n"
@@ -62,7 +66,7 @@ PATCHED_BODY = (
 
 def patch_image_download_switch(smali_path: Path) -> dict:
     text = smali_path.read_text()
-    pattern = r"^\.method public final b\(\)Z\n.*?^\.end method"
+    pattern = rf"^\.method public final {METHOD}\(\)Z\n.*?^\.end method"
     methods = list(re.finditer(pattern, text, re.M | re.S))
     if len(methods) != 1:
         raise ValueError("Expected exactly one FunctionSwitch enable getter")
@@ -70,7 +74,7 @@ def patch_image_download_switch(smali_path: Path) -> dict:
     original = match.group()
     if hashlib.sha256(original.encode()).hexdigest() != EXPECTED_METHOD_SHA:
         raise ValueError(
-            "FunctionSwitch enable getter differs from the verified REDnote 9.48.1 input"
+            "FunctionSwitch enable getter differs from the verified REDnote input"
         )
     if original != ORIGINAL_BODY:
         raise ValueError("Unexpected FunctionSwitch enable getter layout")
@@ -94,7 +98,7 @@ def patch_image_download_switch(smali_path: Path) -> dict:
 def _compiled_units(dex, descriptor: str, method: str, proto: str) -> list[int]:
     definitions = dex.class_definitions(descriptor)
     if len(definitions) != 1:
-        raise ValueError("Expected one FunctionSwitch class in classes12.dex")
+        raise ValueError("Expected one FunctionSwitch class in the FunctionSwitch DEX")
     matches = [
         (index, code)
         for index, _, code in dex.method_records(definitions[0])
@@ -112,7 +116,7 @@ def verify_compiled_image_download_switch(apk: Path) -> dict:
     from verify_rednote_signature_compat import DexFile
 
     with zipfile.ZipFile(apk) as archive:
-        dex = DexFile(archive.read("classes12.dex"), "classes12.dex")
+        dex = DexFile(archive.read(DEX_ENTRY), DEX_ENTRY)
     units = _compiled_units(dex, DESCRIPTOR, METHOD, PROTO)
 
     string_hits = 0
@@ -162,7 +166,7 @@ def verify_compiled_image_download_switch(apk: Path) -> dict:
         raise ValueError("Compiled image-download switch lost the original enable field read")
     return {
         "verified": True,
-        "dex": "classes12.dex",
+        "dex": DEX_ENTRY,
         "class": CLASS,
         "method": METHOD + PROTO,
         "downloadType": DOWNLOAD_TYPE,
