@@ -336,7 +336,8 @@ jobs:
           else
             tag="$DISPATCH_TAG"
           fi
-          if [[ ! "$tag" =~ ^rednote-v9\.48\.1-[0-9]+$ ]]; then
+          # Accept any rednote-v<version>-<revision> tag so a ported base version can publish.
+          if [[ ! "$tag" =~ ^rednote-v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$ ]]; then
             echo "Refusing invalid REDnote release tag: $tag" >&2
             exit 1
           fi
