@@ -103,3 +103,37 @@ clone package. The fold-layout claim is unchanged: 9.54.0 carries the same
 forcing `isHorizontalFolderDevice()` and `isPad()` remains necessary for
 international/Japanese Z Fold8 units (`SM-F971B`/`SM-F976B` are absent from the list
 while the mainland `SM-F9710`/`SM-F9760` are present).
+
+## Pinch-to-resize columns (`--dynamic-columns`)
+
+REDnote already ships the whole gesture.  `ic2.i.a(RecyclerView, String)` binds a
+scale listener when `et.n.b` is true -- i.e. when the device reports as a tablet or
+a horizontal foldable, which `--fold-layout` already forces.  `ic2.i$b.e()` maps the
+pinch ratio onto the persisted state, `dlb.a` re-lays out the grid, writes
+`screen_scale_sp_key` and shows the "more/less notes have been shown" toast.
+
+The missing piece was the column table itself, `et.n.e(int widthPx)`:
+
+| width band | dp range | stock columns | with `4,5` |
+| --- | --- | --- | --- |
+| TINNY | < 280dp | 1 | 1 |
+| SMALL | 280-480dp (outer screen) | **2, always** | 2 / 3 / 4 |
+| MIDDLE | 480-680dp | 2 / 3 / 4 | 2 / 3 / 4 |
+| BIG | 680-960dp (inner screen) | 2 / 3 / 4 | **3 / 4 / 5** |
+| LAGE | >= 960dp | 3 / 4 / 5 | 3 / 4 / 5 |
+
+The outer screen had the gesture bound but sat in SMALL, which ignored the pinch
+state entirely -- that is why pinching did nothing there.  The inner screen sat in
+BIG, whose ceiling was 4.
+
+`--dynamic-columns OUTER,INNER` (default `4,5`, empty string disables) rewrites
+`et.n.e(I)` to read the pinch state through `et.n.a()` and return the requested
+counts.  TINNY and MIDDLE are deliberately left alone so cover screens stay single
+column and existing tablet layouts keep their range.  `et.n.e(I)` has exactly one
+caller (`et.n.f(Context)`, which passes the screen width), so the change cannot
+affect the other consumers of `f()`.
+
+The build verifies the result at the bytecode level
+(`verify_compiled_dynamic_columns`): it re-reads `classes3.dex` from the output APK,
+pairs every `const/4 v0, N` with its `return v0`, and requires the returned set to be
+exactly `{1,2,3,4,5}` across 16 return sites.
