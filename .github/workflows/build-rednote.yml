@@ -82,6 +82,11 @@ on:
         type: boolean
         required: true
         default: true
+      dynamic_columns:
+        description: "Pinch-to-resize columns as OUTER,INNER (e.g. 4,5); empty disables"
+        type: string
+        required: false
+        default: "4,5"
       im_diag:
         description: Diagnostic build - log fortuna transport callbacks (kiri-im tag). Do not ship.
         type: boolean
@@ -104,6 +109,7 @@ jobs:
       SKIP_SPLASH_ADS: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_splash_ads }}
       ALLOW_DISABLED_DOWNLOADS: ${{ github.event_name != 'workflow_dispatch' || inputs.allow_disabled_downloads }}
       WECHAT_SHARE_IDENTITY: ${{ github.event_name != 'workflow_dispatch' || inputs.wechat_share_identity }}
+      DYNAMIC_COLUMNS: ${{ github.event_name == 'workflow_dispatch' && inputs.dynamic_columns || '4,5' }}
       IM_DIAG: ${{ github.event_name == 'workflow_dispatch' && inputs.im_diag }}
     outputs:
       hide_feed_ads: ${{ steps.build_variant.outputs.hide_feed_ads }}
@@ -221,6 +227,9 @@ jobs:
             --launcher-icon assets/branding/xiaokshu.png
             --decode-dex classes3.dex
             --decode-dex classes4.dex
+            --decode-dex classes12.dex
+            --decode-dex classes13.dex
+            --decode-dex classes19.dex
             --output output_apks/rednote-fold-custom.apk
             --report output_apks/rednote-fold-build-report.json
             --keystore ks_pkcs12.keystore
@@ -243,6 +252,9 @@ jobs:
           fi
           if [[ "$WECHAT_SHARE_IDENTITY" == "true" ]]; then
             args+=(--wechat-share-official-package)
+          fi
+          if [[ -n "${DYNAMIC_COLUMNS:-}" ]]; then
+            args+=(--dynamic-columns "$DYNAMIC_COLUMNS")
           fi
           "${args[@]}"
 
@@ -286,6 +298,11 @@ jobs:
             verify_args+=(--expect-wechat-share-identity)
           else
             verify_args+=(--expect-no-wechat-share-identity)
+          fi
+          if [[ -n "${DYNAMIC_COLUMNS:-}" ]]; then
+            verify_args+=(--expect-dynamic-columns)
+          else
+            verify_args+=(--expect-no-dynamic-columns)
           fi
           python tools/verify_rednote_release.py "$APK" "$REPORT" "${verify_args[@]}"
 

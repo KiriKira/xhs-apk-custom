@@ -45,7 +45,7 @@ def require(condition, message):
 
 def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect_wechat_share=None,
            expect_splash_skip=None, expect_download_unlock=None, expect_block_words=None,
-           expect_im_diag=None):
+           expect_im_diag=None, expect_dynamic_columns=None):
     report = json.loads(report_path.read_text())
     require(report["input"]["sha256"] == SOURCE_SHA, "Unexpected source file")
     require(report["input"]["signerCertificateSha256"] == [SOURCE_CERT], "Unexpected source signer")
@@ -162,6 +162,23 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
         require(splash["touchedDexEntry"] == "classes4.dex", "Unexpected splash dispatcher DEX")
         splash["compiledVerification"] = verify_compiled_splash_patch(apk)
         expected_entries.add(splash["touchedDexEntry"])
+    dynamic_columns = report.get("dynamicColumns")
+    if expect_dynamic_columns:
+        require(isinstance(dynamic_columns, dict), "Missing dynamic-column report")
+        require(dynamic_columns.get("enabled") is True, "Dynamic columns are disabled")
+        require(dynamic_columns.get("outerScreenColumns") == [2, 3, 4],
+                f"Unexpected outer-screen column range: {dynamic_columns.get('outerScreenColumns')}")
+        require(dynamic_columns.get("innerScreenColumns") == [3, 4, 5],
+                f"Unexpected inner-screen column range: {dynamic_columns.get('innerScreenColumns')}")
+        compiled = dynamic_columns.get("compiledVerification")
+        require(isinstance(compiled, dict) and compiled.get("verified") is True,
+                "Compiled dynamic-column patch is missing")
+        require(compiled.get("returnedColumnCounts") == [1, 2, 3, 4, 5],
+                f"Compiled column returns are {compiled.get('returnedColumnCounts')}")
+        expected_entries.add(dynamic_columns["touchedDexEntry"])
+    elif expect_dynamic_columns is False:
+        require(dynamic_columns is None or dynamic_columns.get("enabled") is False,
+                "Dynamic columns are unexpectedly enabled")
     download_unlock = report.get("authorDisabledDownloadUnlock", {"enabled": False})
     require(type(download_unlock.get("enabled")) is bool, "Invalid download-unlock patch flag")
     if expect_download_unlock is not None:
@@ -284,6 +301,9 @@ if __name__ == "__main__":
     words_group = parser.add_mutually_exclusive_group()
     words_group.add_argument("--expect-block-words", action="store_true")
     words_group.add_argument("--expect-no-block-words", action="store_true")
+    columns_group = parser.add_mutually_exclusive_group()
+    columns_group.add_argument("--expect-dynamic-columns", action="store_true")
+    columns_group.add_argument("--expect-no-dynamic-columns", action="store_true")
     wxgroup = parser.add_mutually_exclusive_group()
     wxgroup.add_argument("--expect-wechat-share-identity", action="store_true")
     wxgroup.add_argument("--expect-no-wechat-share-identity", action="store_true")
@@ -294,5 +314,7 @@ if __name__ == "__main__":
     expected_download = True if args.expect_download_unlock else False if args.expect_no_download_unlock else None
     expected_block_words = True if args.expect_block_words else False if args.expect_no_block_words else None
     expected_im_diag = True if args.expect_im_diag else False if args.expect_no_im_diag else None
+    expected_dynamic_columns = (True if args.expect_dynamic_columns
+                                else False if args.expect_no_dynamic_columns else None)
     verify(args.apk, args.report, expected, args.expect_launcher_icon, expected_wechat, expected_splash,
-           expected_download, expected_block_words, expected_im_diag)
+           expected_download, expected_block_words, expected_im_diag, expected_dynamic_columns)

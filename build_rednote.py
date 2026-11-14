@@ -49,6 +49,12 @@ from rednote_splash_ad_patch import (
     patch_splash_ad_dispatch,
     verify_compiled_splash_patch,
 )
+from rednote_dynamic_columns_patch import (
+    CLASS as DYNAMIC_COLUMNS_CLASS,
+    DEX_ENTRY as DYNAMIC_COLUMNS_DEX,
+    patch_dynamic_columns,
+    verify_compiled_dynamic_columns,
+)
 from rednote_im_diag_patch import (
     build_im_diag_dex,
     install_im_diag,
@@ -795,6 +801,28 @@ def find_smali_class(decoded_dir: Path, class_name: str) -> Path:
     return matches[0]
 
 
+def find_obfuscated_smali_class(decoded_dir: Path, dotted_class: str) -> Path:
+    """Locate a short obfuscated class such as ``et.n`` without suffix collisions.
+
+    ``find_smali_class`` matches on a path suffix, which is wrong for top-level
+    obfuscated names: ``et.n`` also matches ``com/xingin/xhs/net/n.smali`` and
+    ``org/chromium/net/n.smali``.  Match the *package path* exactly instead.
+    """
+    parts = dotted_class.split(".")
+    relative = Path(*parts[:-1]) / f"{parts[-1]}.smali"
+    matches = [
+        path
+        for path in decoded_dir.glob("smali*/**/*.smali")
+        if path.parts[-len(parts):] == tuple(parts[:-1]) + (f"{parts[-1]}.smali",)
+    ]
+    if len(matches) != 1:
+        found = [str(path) for path in matches]
+        raise BuildError(
+            f"Expected one smali file for {dotted_class}; found {len(matches)}: {found}"
+        )
+    return matches[0]
+
+
 def resolve_manifest_application_class(root: ET.Element, source_package: str) -> str:
     application = next(
         (child for child in list(root) if _local_name(child.tag) == "application"), None
@@ -1442,6 +1470,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--fold-layout", action="store_true", help="Force the two existing fold-layout gates")
     parser.add_argument(
+        "--dynamic-columns",
+        nargs="?",
+        const="4,5",
+        default=None,
+        metavar="OUTER,INNER",
+        help=(
+            "Enable pinch-to-resize columns on both screens. Takes the outer and inner "
+            "maximum column counts, e.g. '4,5' (default) for 2-4 columns on the outer "
+            "screen and 3-5 on the inner screen."
+        ),
+    )
+    parser.add_argument(
         "--keep-original-main-process", action=argparse.BooleanOptionalAction, default=True,
         help="Keep the source main-process label and its original local predicates while cloning the installed package",
     )
@@ -1728,6 +1768,33 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             fold_touched_dex_names.add(device_dex)
             warnings.append(
                 "--fold-layout changed DeviceInfoContainer.isHorizontalFolderDevice() and isPad() to return true."
+            )
+
+        dynamic_columns_audit: dict[str, Any] = {
+            "enabled": bool(args.dynamic_columns),
+            "touchedDexEntries": [],
+        }
+        if args.dynamic_columns:
+            try:
+                outer_text, inner_text = args.dynamic_columns.split(",")
+                outer_max, inner_max = int(outer_text), int(inner_text)
+            except ValueError as error:
+                raise BuildError(
+                    "--dynamic-columns expects OUTER,INNER such as '4,5'"
+                ) from error
+            dynamic_columns_smali = find_obfuscated_smali_class(
+                decoded_dir, DYNAMIC_COLUMNS_CLASS
+            )
+            dynamic_columns_audit = patch_dynamic_columns(
+                dynamic_columns_smali, outer_max=outer_max, inner_max=inner_max
+            )
+            touched_dex_names.add(dynamic_columns_audit["touchedDexEntry"])
+            warnings.append(
+                "--dynamic-columns rewrote "
+                f"{DYNAMIC_COLUMNS_CLASS}.e(I)I: outer screen pinches through "
+                f"2-{outer_max} columns, inner screen through "
+                f"{inner_max - 2}-{inner_max} columns. Column counts still come from "
+                "the device width band, so a screen narrower than 280dp stays single column."
             )
 
         signature_compat_audit: dict[str, Any] = {"enabled": False}
@@ -2088,6 +2155,12 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
             function_switch_unlock_audit["compiledVerification"] = (
                 verify_compiled_image_download_switch(output_path)
             )
+        if args.dynamic_columns:
+            dynamic_columns_audit["compiledVerification"] = verify_compiled_dynamic_columns(
+                output_path,
+                outer_max=dynamic_columns_audit["outerScreenColumns"][-1],
+                inner_max=dynamic_columns_audit["innerScreenColumns"][-1],
+            )
         report = {
             "schemaVersion": 1,
             "sourceDescription": redact_phone_like_text(source_description),
@@ -2140,6 +2213,7 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 "methods": ["isHorizontalFolderDevice", "isPad"] if args.fold_layout else [],
                 "touchedDexEntries": sorted(fold_touched_dex_names),
             },
+            "dynamicColumns": dynamic_columns_audit,
             "feedAdDisplay": feed_ad_audit,
             "keywordBlocking": block_words_audit,
             "imDiagnostics": im_diag_audit,
