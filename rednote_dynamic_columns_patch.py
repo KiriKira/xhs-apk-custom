@@ -48,26 +48,33 @@ TAIL_START = re.compile(r"^    :goto_0$", re.M)
 TAIL_RETURN = re.compile(r"^    return v0$", re.M)
 
 
-def band_counts(outer_max: int, inner_max: int) -> dict[str, tuple[int, int, int]]:
-    """Return ``{band: (zoom_out, normal, zoom_in)}`` for the requested maxima.
+def band_counts(outer_default: int, inner_default: int) -> dict[str, tuple[int, int, int]]:
+    """Return ``{band: (zoom_out, normal, zoom_in)}`` for the requested defaults.
 
-    This is the Python mirror of ``dev.kiri.xhsads.ColumnSettings.spanFor``; the
-    two must agree or the report lies about what the APK does.  ``outer_max``
-    applies to the ``SMALL`` band (the cover screen) and ``inner_max`` to ``BIG``
-    (the inner screen).  Each band steps one column per pinch.
+    This mirrors ``dev.kiri.xhsads.ColumnSettings.resolve``; the two must agree or
+    the report lies about what the APK does.
+
+    The setting is the **default** column count (what the feed shows on open), not a
+    hard ceiling: one pinch step moves one column either way, so ``2`` means
+    ``2 / 2 / 3`` and ``4`` means ``3 / 4 / 5``.  Columns never leave ``2..5``.
     """
-    if outer_max < 2 or outer_max > 9:
-        raise ValueError(f"outer_max must be between 2 and 9, got {outer_max}")
-    if inner_max < 2 or inner_max > 9:
-        raise ValueError(f"inner_max must be between 2 and 9, got {inner_max}")
+    if not 2 <= outer_default <= 5:
+        raise ValueError(f"outer_default must be between 2 and 5, got {outer_default}")
+    if not 2 <= inner_default <= 5:
+        raise ValueError(f"inner_default must be between 2 and 5, got {inner_default}")
     return {
         # Cover displays keep a single column; nothing wider is usable there.
         "TINNY": (1, 1, 1),
-        "SMALL": (2, max(2, min(3, outer_max)), outer_max),
-        "MIDDLE": (2, max(2, min(3, outer_max)), outer_max),
-        "BIG": (max(1, inner_max - 2), max(1, inner_max - 1), inner_max),
-        "LAGE": (max(1, inner_max - 2), max(1, inner_max - 1), inner_max),
+        "SMALL": _pinch_steps(outer_default),
+        "MIDDLE": _pinch_steps(outer_default),
+        "BIG": _pinch_steps(inner_default),
+        "LAGE": _pinch_steps(inner_default),
     }
+
+
+def _pinch_steps(default: int) -> tuple[int, int, int]:
+    """``(zoom_out, normal, zoom_in)`` around a default, clamped to 2..5."""
+    return (max(2, default - 1), default, min(5, default + 1))
 
 
 def _render_tail() -> str:
@@ -135,14 +142,14 @@ def _patch_entry_context(text: str) -> str:
     return text[: matches[0].start()] + patched_method + text[matches[0].end():]
 
 
-def patch_dynamic_columns(smali_path: Path, *, outer_max: int = 4,
-                          inner_max: int = 5) -> dict:
+def patch_dynamic_columns(smali_path: Path, *, outer_default: int = 2,
+                          inner_default: int = 4) -> dict:
     """Rewrite the column table of ``et.n.e(I)I`` in place.
 
     Only the tail after ``:goto_0`` is replaced; the width-band detection above it
     stays exactly as the stock APK emitted it.
     """
-    bands = band_counts(outer_max, inner_max)
+    bands = band_counts(outer_default, inner_default)
     text = smali_path.read_text()
 
     pattern = (rf"^\.method public final {METHOD}{re.escape(PROTO)}\n"
@@ -190,8 +197,8 @@ def patch_dynamic_columns(smali_path: Path, *, outer_max: int = 4,
         "method": f"{METHOD}{PROTO}",
         "touchedDexEntry": DEX_ENTRY,
         "originalMethodSha256": digest,
-        "outerMaxColumns": outer_max,
-        "innerMaxColumns": inner_max,
+        "outerDefaultColumns": outer_default,
+        "innerDefaultColumns": inner_default,
         "outerScreenColumns": [bands["SMALL"][0], bands["SMALL"][1], bands["SMALL"][2]],
         "innerScreenColumns": [bands["BIG"][0], bands["BIG"][1], bands["BIG"][2]],
         "patchedBands": {name: list(counts) for name, counts in bands.items()},
@@ -199,8 +206,8 @@ def patch_dynamic_columns(smali_path: Path, *, outer_max: int = 4,
     }
 
 
-def verify_compiled_dynamic_columns(apk_path: Path, *, outer_max: int = 4,
-                                    inner_max: int = 5) -> dict:
+def verify_compiled_dynamic_columns(apk_path: Path, *, outer_default: int = 2,
+                                    inner_default: int = 4) -> dict:
     """Re-read ``et.n.e(I)I`` and ``et.n.f(Context)I`` from the built APK.
 
     Since the column table moved into the runtime helper, the check asserts the
@@ -312,6 +319,6 @@ def verify_compiled_dynamic_columns(apk_path: Path, *, outer_max: int = 4,
         "entryFallbackReturns": sorted(set(entry_returns)),
         "spanInstructionCount": insn_count,
         "entryInstructionCount": entry_count,
-        "outerMaxColumns": outer_max,
-        "innerMaxColumns": inner_max,
+        "outerDefaultColumns": outer_default,
+        "innerDefaultColumns": inner_default,
     }

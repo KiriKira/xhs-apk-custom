@@ -88,7 +88,7 @@ on:
         description: "Pinch-to-resize columns as OUTER,INNER (e.g. 4,5); empty disables"
         type: string
         required: false
-        default: "4,5"
+        default: "2,4"
       im_diag:
         description: Diagnostic build - log fortuna transport callbacks (kiri-im tag). Do not ship.
         type: boolean
@@ -391,14 +391,14 @@ jobs:
           if [[ "$BLOCK_WORDS" == "true" ]]; then
             cat >> release-notes.md <<'NOTES'
 
-          **Pinch-to-resize columns (小K书设置 → 信息流列数):** REDnote ships the whole gesture already — a scale listener is bound when the device reports as a tablet or a horizontal foldable, the grid re-lays out on each pinch, and the choice persists. What was wrong was the column table: the outer screen's width band ignored the pinch state and always returned 2, and the inner screen's band capped at 4.
+          **Pinch columns (小K书设置 → 信息流列数):** REDnote already ships the gesture — a scale listener is bound on tablets and horizontal foldables, the grid re-lays out on each pinch, and the choice persists. What was wrong was the column table: the outer screen's width band ignored the pinch state and returned a constant, and the inner screen's band capped at 4.
 
-          This build leaves REDnote's own width detection untouched and replaces only the table lookup, which now calls a runtime helper. So the maxima are **settings, not constants**:
+          This build leaves REDnote's width detection untouched and replaces only the table lookup with a runtime helper, so the column count is a **setting**:
 
-          - 外屏最多 **4** 列 (2 / 3 / 4 by pinching)
-          - 内屏最多 **5** 列 (3 / 4 / 5 by pinching)
+          - 外屏默认 **2** 列 → pinch gives 2 / 2 / 3
+          - 内屏默认 **4** 列 → pinch gives 3 / 4 / 5
 
-          Change either number in 小K书设置 and return to the feed — no rebuild. The page also shows the measured screen size and the last few band decisions, and **导出诊断 log** writes a text report (device, sizes, current maxima, every decision) to the app's files dir and opens the share sheet, so a wrong band can be diagnosed without adb. Screens narrower than 280dp keep a single column. Feed requests, payloads and impressions are untouched.
+          Those are the stock defaults, now adjustable in 小K书设置 and effective on return to the feed without a rebuild; the range stays 2–5 columns. The page also shows the measured screen size and recent decisions, and **导出诊断 log** writes a full text report to the app's files dir and opens the share sheet, so a device can be diagnosed without adb. Screens narrower than 280dp stay single column. Requests, payloads and impressions are untouched.
 
           **Keyword blocking (小K书设置):** the settings list has a new `小K书设置` row directly below `关于小红书`. Its page stores one keyword list (`SharedPreferences`, one word per line; `,`/`，`/`、`/`;` also separate entries) and saves on leave. A discovery-feed card is hidden when its **note title** matches a keyword (the item's display title, else its raw title); body text, author names, tags and like/view counters are never matched. Matching ignores spaces and `-`/`_`/`/`/`·` separators and is case-insensitive. A hit reuses the same `View.GONE` + zero-height state and the same card-root restore path as the ad-display patch, so recycled cards rebind normally. The page also shows on-device counters (checked cards, hits, last compared title). The filter covers the discovery/home feed only — search results, detail pages and the follow feed are unchanged, and no request, payload or impression is modified. The row is inserted at runtime and re-checked when the settings window regains focus; if the settings adapter differs, the page opens unchanged.
           NOTES

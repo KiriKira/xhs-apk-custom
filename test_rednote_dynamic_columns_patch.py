@@ -27,10 +27,10 @@ class DynamicColumnsPatchTests(unittest.TestCase):
 
     def test_python_table_mirrors_the_helper(self):
         """band_counts must agree with ColumnSettings.resolve in the Java helper."""
-        table = band_counts(4, 5)
+        table = band_counts(2, 4)
         self.assertEqual(table["TINNY"], (1, 1, 1))
-        self.assertEqual(table["SMALL"], (2, 3, 4))
-        self.assertEqual(table["MIDDLE"], (2, 3, 4))
+        self.assertEqual(table["SMALL"], (2, 2, 3))
+        self.assertEqual(table["MIDDLE"], (2, 2, 3))
         self.assertEqual(table["BIG"], (3, 4, 5))
         self.assertEqual(table["LAGE"], (3, 4, 5))
 
@@ -66,8 +66,8 @@ class DynamicColumnsPatchTests(unittest.TestCase):
         audit = patch_dynamic_columns(self.path)
         self.assertEqual(audit["originalMethodSha256"], EXPECTED_METHOD_SHA)
         self.assertTrue(audit["bandDetectionPreserved"])
-        self.assertEqual(audit["outerMaxColumns"], 4)
-        self.assertEqual(audit["innerMaxColumns"], 5)
+        self.assertEqual(audit["outerDefaultColumns"], 2)
+        self.assertEqual(audit["innerDefaultColumns"], 4)
 
     def test_rejects_changed_method_without_partial_write(self):
         changed = self.source.replace(".locals 5", ".locals 6")
@@ -77,17 +77,17 @@ class DynamicColumnsPatchTests(unittest.TestCase):
         self.assertEqual(self.path.read_text(), changed)
 
     def test_rejects_inverted_maxima(self):
-        with self.assertRaisesRegex(ValueError, "between 2 and 9"):
-            band_counts(10, 5)
-        with self.assertRaisesRegex(ValueError, "between 2 and 9"):
-            band_counts(4, 0)
+        with self.assertRaisesRegex(ValueError, "between 2 and 5"):
+            band_counts(6, 4)
+        with self.assertRaisesRegex(ValueError, "between 2 and 5"):
+            band_counts(2, 1)
 
-    def test_custom_maxima_reach_the_report(self):
-        audit = patch_dynamic_columns(self.path, outer_max=3, inner_max=6)
-        self.assertEqual(audit["outerScreenColumns"], [2, 3, 3])
-        self.assertEqual(audit["innerScreenColumns"], [4, 5, 6])
-        self.assertEqual(audit["outerMaxColumns"], 3)
-        self.assertEqual(audit["innerMaxColumns"], 6)
+    def test_custom_defaults_reach_the_report(self):
+        audit = patch_dynamic_columns(self.path, outer_default=3, inner_default=5)
+        self.assertEqual(audit["outerScreenColumns"], [2, 3, 4])
+        self.assertEqual(audit["innerScreenColumns"], [4, 5, 5])
+        self.assertEqual(audit["outerDefaultColumns"], 3)
+        self.assertEqual(audit["innerDefaultColumns"], 5)
 
 
 if __name__ == "__main__":

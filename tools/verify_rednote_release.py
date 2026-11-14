@@ -166,10 +166,10 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     if expect_dynamic_columns:
         require(isinstance(dynamic_columns, dict), "Missing dynamic-column report")
         require(dynamic_columns.get("enabled") is True, "Dynamic columns are disabled")
-        require(dynamic_columns.get("outerMaxColumns") == 4,
-                f"Unexpected outer-screen maximum: {dynamic_columns.get('outerMaxColumns')}")
-        require(dynamic_columns.get("innerMaxColumns") == 5,
-                f"Unexpected inner-screen maximum: {dynamic_columns.get('innerMaxColumns')}")
+        require(dynamic_columns.get("outerDefaultColumns") == 2,
+                f"Unexpected outer-screen default: {dynamic_columns.get('outerDefaultColumns')}")
+        require(dynamic_columns.get("innerDefaultColumns") == 4,
+                f"Unexpected inner-screen default: {dynamic_columns.get('innerDefaultColumns')}")
         require(dynamic_columns.get("bandDetectionPreserved") is True,
                 "The stock width-band detection was not preserved")
         compiled = dynamic_columns.get("compiledVerification")

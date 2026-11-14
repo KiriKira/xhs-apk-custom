@@ -1472,7 +1472,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dynamic-columns",
         nargs="?",
-        const="4,5",
+        const="2,4",
         default=None,
         metavar="OUTER,INNER",
         help=(
@@ -1937,17 +1937,19 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 )
             try:
                 outer_text, inner_text = args.dynamic_columns.split(",")
-                outer_max, inner_max = int(outer_text), int(inner_text)
+                outer_default, inner_default = int(outer_text), int(inner_text)
             except ValueError as error:
                 raise BuildError(
-                    "--dynamic-columns expects OUTER,INNER such as '4,5'"
+                    "--dynamic-columns expects OUTER,INNER defaults such as '2,4'"
                 ) from error
             try:
                 dynamic_columns_smali = find_obfuscated_smali_class(
                     decoded_dir, DYNAMIC_COLUMNS_CLASS
                 )
                 dynamic_columns_audit = patch_dynamic_columns(
-                    dynamic_columns_smali, outer_max=outer_max, inner_max=inner_max
+                    dynamic_columns_smali,
+                    outer_default=outer_default,
+                    inner_default=inner_default,
                 )
                 dynamic_columns_audit["targetDexEntry"] = dex_name_for_smali(
                     decoded_dir, dynamic_columns_smali
@@ -1956,9 +1958,9 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 warnings.append(
                     "--dynamic-columns routes "
                     f"{DYNAMIC_COLUMNS_CLASS}.e(I) through "
-                    "dev.kiri.xhsads.ColumnSettings.spanFor(II): pinch steps through 2.."
-                    f"{outer_max} columns on the outer screen and "
-                    f"{max(1, inner_max - 2)}..{inner_max} on the inner screen. Both maxima "
+                    "dev.kiri.xhsads.ColumnSettings.spanFor(II): the feed opens with "
+                    f"{outer_default} columns on the outer screen and {inner_default} on the "
+                    "inner screen, and each pinch moves one column within 2..5. Both defaults "
                     "can be changed in 小K书设置 without rebuilding; the width band is still "
                     "the stock one."
                 )
@@ -2175,8 +2177,8 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         if args.dynamic_columns:
             dynamic_columns_audit["compiledVerification"] = verify_compiled_dynamic_columns(
                 output_path,
-                outer_max=dynamic_columns_audit["outerMaxColumns"],
-                inner_max=dynamic_columns_audit["innerMaxColumns"],
+                outer_default=dynamic_columns_audit["outerDefaultColumns"],
+                inner_default=dynamic_columns_audit["innerDefaultColumns"],
             )
         report = {
             "schemaVersion": 1,

@@ -647,8 +647,8 @@ public final class BlockWordsActivity extends Activity {
 
         TextView columnHint = new TextView(this);
         columnHint.setText("外屏＝折叠后的窄屏，内屏＝展开后的大屏。\\n"
-                + "双指捏合按 缩小 / 正常 / 放大 三档切换列数。\\n"
-                + "外屏该档位的最小值固定为 2 列，最大值取下面填的数。");
+                + "这里填的是默认列数（打开信息流时显示几列）。\\n"
+                + "双指捏合在其基础上各上下 1 列，范围 2–5 列。");
         columnHint.setTextSize(12f);
         columnHint.setTextColor(Color.rgb(0x60, 0x60, 0x60));
         columnHint.setLineSpacing(dp(3), 1f);
@@ -665,7 +665,7 @@ public final class BlockWordsActivity extends Activity {
         root.addView(columnRow, columnRowParams);
 
         TextView outerLabel = new TextView(this);
-        outerLabel.setText("外屏最多");
+        outerLabel.setText("外屏默认");
         outerLabel.setTextSize(13f);
         outerLabel.setTextColor(Color.BLACK);
         columnRow.addView(outerLabel, new LinearLayout.LayoutParams(
@@ -679,7 +679,7 @@ public final class BlockWordsActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView columnUnit = new TextView(this);
-        columnUnit.setText("列   内屏最多");
+        columnUnit.setText("列   内屏默认");
         columnUnit.setTextSize(13f);
         columnUnit.setTextColor(Color.BLACK);
         columnRow.addView(columnUnit, new LinearLayout.LayoutParams(
@@ -713,7 +713,7 @@ public final class BlockWordsActivity extends Activity {
             public void onClick(View view) {
                 saveColumnInputs();
                 Toast.makeText(BlockWordsActivity.this,
-                        "已保存：外屏最多 " + ColumnSettings.outerMax(BlockWordsActivity.this)
+                        "已保存：外屏默认 " + ColumnSettings.outerMax(BlockWordsActivity.this)
                                 + " 列，内屏最多 " + ColumnSettings.innerMax(BlockWordsActivity.this)
                                 + " 列（返回信息流生效）",
                         Toast.LENGTH_LONG).show();
@@ -954,8 +954,8 @@ public final class ColumnSettings {
     private static final String KEY_LOG = "decision_log";
     private static final String LOG_TAG = "DynamicColumnFitWidth";
 
-    private static final int DEFAULT_OUTER = 4;
-    private static final int DEFAULT_INNER = 5;
+    private static final int DEFAULT_OUTER = 2;
+    private static final int DEFAULT_INNER = 4;
     private static final int LOG_LIMIT = 4000;
 
     /** Last decision, mirrored for the settings page. */
@@ -1029,27 +1029,24 @@ public final class ColumnSettings {
         ApplicationHolder.install(context);
     }
 
-    /** Mirror of the Python {@code band_counts} in rednote_dynamic_columns_patch.py. */
+    /**
+     * Mirror of the Python {@code band_counts} in rednote_dynamic_columns_patch.py.
+     *
+     * The setting is the default column count, not a hard ceiling: one pinch step
+     * moves one column either way and the result stays inside 2..5.
+     */
     static int resolve(int band, int pinch, int outer, int inner) {
         if (band == 0) {
             return 1;                       // cover display: single column
         }
-        if (band == 1 || band == 2) {       // SMALL (outer) and MIDDLE
-            if (pinch == 2) {
-                return 2;
-            }
-            if (pinch == 0) {
-                return outer;
-            }
-            return Math.max(2, Math.min(3, outer));
+        int base = (band == 1 || band == 2) ? outer : inner;   // SMALL/MIDDLE vs BIG/LAGE
+        if (pinch == 2) {                   // ZOOM_OUT
+            return Math.max(2, base - 1);
         }
-        if (pinch == 2) {
-            return Math.max(1, inner - 2);
+        if (pinch == 0) {                   // ZOOM_IN
+            return Math.min(5, base + 1);
         }
-        if (pinch == 0) {
-            return inner;
-        }
-        return Math.max(1, inner - 1);
+        return base;                        // NORMAL
     }
 
     public static String bandName(int band) {
@@ -1143,8 +1140,8 @@ public final class ColumnSettings {
             builder.append('\n').append("设备：").append(Build.MANUFACTURER)
                     .append(' ').append(Build.MODEL)
                     .append(" (Android ").append(Build.VERSION.RELEASE).append(')');
-            builder.append('\n').append("配置：外屏最多 ").append(outerMax(context))
-                    .append(" 列，内屏最多 ").append(innerMax(context)).append(" 列");
+            builder.append('\n').append("配置：外屏默认 ").append(outerMax(context))
+                    .append(" 列，内屏默认 ").append(innerMax(context)).append(" 列");
             String last = lastDecision;
             builder.append('\n').append("最近一次判定：")
                     .append(last == null || last.length() == 0 ? "(还没有)" : last);
