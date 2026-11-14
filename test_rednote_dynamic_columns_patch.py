@@ -21,75 +21,53 @@ class DynamicColumnsPatchTests(unittest.TestCase):
         ).read_text()
         self.path.write_text(self.source)
 
-    def test_default_table_gives_three_or_four_outer_and_five_inner(self):
-        audit = patch_dynamic_columns(self.path)
-        self.assertEqual(audit["outerScreenColumns"], [2, 3, 4])
-        self.assertEqual(audit["innerScreenColumns"], [3, 4, 5])
-        self.assertEqual(audit["patchedBands"]["SMALL"], [2, 3, 4])
-        self.assertEqual(audit["patchedBands"]["BIG"], [3, 4, 5])
-        # Cover screens keep a single column.
-        self.assertEqual(audit["patchedBands"]["TINNY"], [1, 1, 1])
-        self.assertEqual(audit["originalMethodSha256"], EXPECTED_METHOD_SHA)
-
-    def test_rewrite_keeps_every_band_threshold_and_returns_each_count(self):
+    def patched(self) -> str:
         patch_dynamic_columns(self.path)
-        patched = self.path.read_text()
+        return self.path.read_text()
+
+    def test_python_table_mirrors_the_helper(self):
+        """band_counts must agree with ColumnSettings.resolve in the Java helper."""
+        table = band_counts(4, 5)
+        self.assertEqual(table["TINNY"], (1, 1, 1))
+        self.assertEqual(table["SMALL"], (2, 3, 4))
+        self.assertEqual(table["MIDDLE"], (2, 3, 4))
+        self.assertEqual(table["BIG"], (3, 4, 5))
+        self.assertEqual(table["LAGE"], (3, 4, 5))
+
+    def test_stock_band_detection_is_kept_verbatim(self):
+        """The whole width detection must survive; only the table lookup changes.
+
+        Regenerating the detection is what broke the earlier revisions, so the
+        head of the method is compared byte for byte.
+        """
+        patched = self.patched()
+        original_head = self.source[: self.source.index("    :goto_0")]
+        patched_head = patched[: patched.index("    :goto_0")]
+        self.assertEqual(original_head, patched_head)
         for dp in BAND_DP:
-            self.assertIn(f"const/16 v2, 0x{dp:x}", patched)
-        # Every column count in the table must have a return site.
-        for value in (1, 2, 3, 4, 5):
-            self.assertIn(f"const/4 v0, 0x{value:x}", patched)
-        self.assertEqual(patched.count("return v0"), 16)
-        # The pinch state is read back through a(), never the obfuscated table.
-        self.assertIn("invoke-virtual {p0}, Let/n;->a()I", patched)
-        self.assertNotIn("Let/n$e;->a:[I", patched)
+            self.assertIn(f"0x{dp:x}", patched_head)
 
-    def test_band_edges_use_lower_exclusive_then_inclusive_upper(self):
-        """Every width above 280dp must land in its real band, not TINNY.
+    def test_tail_delegates_to_the_runtime_helper(self):
+        patched = self.patched()
+        tail = patched[patched.index("    :goto_0"):]
+        self.assertIn("Ldev/kiri/xhsads/ColumnSettings;->spanFor(II)I", tail)
+        self.assertIn("Ljava/lang/Enum;->ordinal()I", tail)
+        self.assertIn("invoke-virtual {p0}, Let/n;->a()I", tail)
 
-        The first band is `width < 280dp`; the rest are inclusive on both ends.
-        Using `if-ge` for all four edges sends every screen wider than 280dp to
-        TINNY, which silently clamps both screens to the smallest step -- the
-        regression this guard exists to catch.
-        """
-        patch_dynamic_columns(self.path)
-        patched = self.path.read_text()
-        self.assertEqual(patched.count("if-lt p1,"), 1)
-        self.assertEqual(patched.count("if-le p1,"), 3)
-        self.assertEqual(patched.count("if-ge p1,"), 0)
-        self.assertIn("if-lt p1, v2, :band_ready", patched)
+    def test_entry_method_seeds_the_helper_context(self):
+        patched = self.patched()
+        self.assertIn(
+            "invoke-static {p1}, Ldev/kiri/xhsads/ColumnSettings;->"
+            "remember(Landroid/content/Context;)V",
+            patched,
+        )
 
-    def test_band_ordinal_matches_each_threshold(self):
-        patch_dynamic_columns(self.path)
-        patched = self.path.read_text()
-        # The ordinal bumped after each edge must equal that band's 1-based index.
-        for ordinal, dp in zip(range(2, 6), BAND_DP[1:] + (960,)):
-            self.assertIn(f"const/4 v0, 0x{ordinal:x}", patched)
-        # LAGE is only reached by falling past the last edge.
-        self.assertRegex(patched, r"if-le p1, v2, :band_ready\n\n    const/4 v0, 0x5")
-
-    def test_keeps_a_diagnostic_log_for_device_triage(self):
-        patch_dynamic_columns(self.path)
-        patched = self.path.read_text()
-        self.assertIn('const-string v2, "DynamicColumnFitWidth"', patched)
-        self.assertIn("band=SMALL", patched)
-
-    def test_original_log_formatting_is_gone(self):
-        """The 200-line StringBuilder logging must not survive the rewrite.
-
-        Only the compact two-string band log is kept, so the method stays small
-        enough to assemble without touching branch-offset limits.
-        """
-        patch_dynamic_columns(self.path)
-        patched = self.path.read_text()
-        self.assertNotIn("StringBuilder", patched)
-        self.assertNotIn("ScreenWidth = ", patched)
-        self.assertNotIn("currentSpanType = ", patched)
-
-    def test_custom_maxima(self):
-        audit = patch_dynamic_columns(self.path, outer_max=3, inner_max=4)
-        self.assertEqual(audit["outerScreenColumns"], [2, 2, 3])
-        self.assertEqual(audit["innerScreenColumns"], [2, 3, 4])
+    def test_reports_the_original_hash(self):
+        audit = patch_dynamic_columns(self.path)
+        self.assertEqual(audit["originalMethodSha256"], EXPECTED_METHOD_SHA)
+        self.assertTrue(audit["bandDetectionPreserved"])
+        self.assertEqual(audit["outerMaxColumns"], 4)
+        self.assertEqual(audit["innerMaxColumns"], 5)
 
     def test_rejects_changed_method_without_partial_write(self):
         changed = self.source.replace(".locals 5", ".locals 6")
@@ -98,16 +76,18 @@ class DynamicColumnsPatchTests(unittest.TestCase):
             patch_dynamic_columns(self.path)
         self.assertEqual(self.path.read_text(), changed)
 
-    def test_rejects_duplicate_method(self):
-        self.path.write_text(self.source + "\n" + self.source)
-        with self.assertRaisesRegex(ValueError, "Expected exactly one"):
-            patch_dynamic_columns(self.path)
-
     def test_rejects_inverted_maxima(self):
-        with self.assertRaisesRegex(ValueError, "at least"):
-            band_counts(5, 4)
-        with self.assertRaisesRegex(ValueError, "outer_max"):
-            band_counts(9, 9)
+        with self.assertRaisesRegex(ValueError, "between 2 and 9"):
+            band_counts(10, 5)
+        with self.assertRaisesRegex(ValueError, "between 2 and 9"):
+            band_counts(4, 0)
+
+    def test_custom_maxima_reach_the_report(self):
+        audit = patch_dynamic_columns(self.path, outer_max=3, inner_max=6)
+        self.assertEqual(audit["outerScreenColumns"], [2, 3, 3])
+        self.assertEqual(audit["innerScreenColumns"], [4, 5, 6])
+        self.assertEqual(audit["outerMaxColumns"], 3)
+        self.assertEqual(audit["innerMaxColumns"], 6)
 
 
 if __name__ == "__main__":

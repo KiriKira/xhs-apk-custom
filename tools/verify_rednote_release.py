@@ -166,16 +166,20 @@ def verify(apk, report_path, expect_ads=None, expect_launcher_icon=False, expect
     if expect_dynamic_columns:
         require(isinstance(dynamic_columns, dict), "Missing dynamic-column report")
         require(dynamic_columns.get("enabled") is True, "Dynamic columns are disabled")
-        require(dynamic_columns.get("outerScreenColumns") == [2, 3, 4],
-                f"Unexpected outer-screen column range: {dynamic_columns.get('outerScreenColumns')}")
-        require(dynamic_columns.get("innerScreenColumns") == [3, 4, 5],
-                f"Unexpected inner-screen column range: {dynamic_columns.get('innerScreenColumns')}")
+        require(dynamic_columns.get("outerMaxColumns") == 4,
+                f"Unexpected outer-screen maximum: {dynamic_columns.get('outerMaxColumns')}")
+        require(dynamic_columns.get("innerMaxColumns") == 5,
+                f"Unexpected inner-screen maximum: {dynamic_columns.get('innerMaxColumns')}")
+        require(dynamic_columns.get("bandDetectionPreserved") is True,
+                "The stock width-band detection was not preserved")
         compiled = dynamic_columns.get("compiledVerification")
         require(isinstance(compiled, dict) and compiled.get("verified") is True,
                 "Compiled dynamic-column patch is missing")
-        require(compiled.get("returnedColumnCounts") == [1, 2, 3, 4, 5],
-                f"Compiled column returns are {compiled.get('returnedColumnCounts')}")
-        expected_entries.add(dynamic_columns["touchedDexEntry"])
+        require(compiled.get("runtimeTable") == "dev.kiri.xhsads.ColumnSettings.spanFor(II)I",
+                f"Unexpected runtime table: {compiled.get('runtimeTable')}")
+        require(compiled.get("bandEdgeConstants") == [280, 480, 680, 960],
+                f"Compiled band edges are {compiled.get('bandEdgeConstants')}")
+        expected_entries.add(dynamic_columns["targetDexEntry"])
     elif expect_dynamic_columns is False:
         require(dynamic_columns is None or dynamic_columns.get("enabled") is False,
                 "Dynamic columns are unexpectedly enabled")

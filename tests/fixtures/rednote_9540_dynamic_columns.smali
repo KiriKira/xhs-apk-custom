@@ -562,3 +562,112 @@
     return v0
     .line 331
 .end method
+
+.method public final f(Landroid/content/Context;)I
+    .locals 2
+    .param p1    # Landroid/content/Context;
+        .annotation build Lorg/jetbrains/annotations/NotNull;
+        .end annotation
+    .end param
+
+    .line 1
+    sget-boolean v0, Let/n;->b:Z
+
+    .line 2
+    if-eqz v0, :cond_1
+
+    .line 4
+    sget-object v0, Let/n;->c:Lkotlin/j;
+
+    .line 6
+    check-cast v0, Lkotlin/q;
+
+    .line 8
+    invoke-virtual {v0}, Lkotlin/q;->getValue()Ljava/lang/Object;
+
+    .line 10
+    move-result-object v0
+
+    .line 13
+    check-cast v0, Ljava/lang/Boolean;
+
+    .line 14
+    invoke-virtual {v0}, Ljava/lang/Boolean;->booleanValue()Z
+
+    .line 16
+    move-result v0
+
+    .line 19
+    if-eqz v0, :cond_0
+
+    .line 20
+    invoke-static {p1}, Lcom/xingin/utils/core/r1;->f(Landroid/content/Context;)I
+
+    .line 22
+    move-result p1
+
+    .line 25
+    :goto_0
+    invoke-virtual {p0, p1}, Let/n;->e(I)I
+
+    .line 26
+    move-result p1
+
+    .line 29
+    goto :goto_1
+
+    .line 30
+    :cond_0
+    sget-object v0, Lcom/xingin/utils/core/r1;->a:Landroid/util/DisplayMetrics;
+
+    .line 31
+    invoke-virtual {p1}, Landroid/content/Context;->getResources()Landroid/content/res/Resources;
+
+    .line 33
+    move-result-object p1
+
+    .line 36
+    invoke-virtual {p1}, Landroid/content/res/Resources;->getDisplayMetrics()Landroid/util/DisplayMetrics;
+
+    .line 37
+    move-result-object p1
+
+    .line 40
+    iget p1, p1, Landroid/util/DisplayMetrics;->widthPixels:I
+
+    .line 41
+    goto :goto_0
+
+    .line 43
+    :cond_1
+    const/4 p1, 0x2
+
+    .line 44
+    :goto_1
+    new-instance v0, Ljava/lang/StringBuilder;
+
+    .line 45
+    const-string v1, "spanCount="
+
+    .line 47
+    invoke-direct {v0, v1}, Ljava/lang/StringBuilder;-><init>(Ljava/lang/String;)V
+
+    .line 49
+    invoke-virtual {v0, p1}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
+
+    .line 52
+    invoke-virtual {v0}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+
+    .line 55
+    move-result-object v0
+
+    .line 58
+    const-string v1, "DynamicColumnFitWidth"
+
+    .line 59
+    invoke-static {v1, v0}, Ljad/f;->c(Ljava/lang/String;Ljava/lang/String;)V
+
+    .line 61
+    return p1
+    .line 64
+.end method

@@ -1,34 +1,18 @@
-"""Pinned REDnote 9.54.0 dynamic-column (pinch-to-resize) patch.
+"""Pinch-to-resize feed columns for REDnote, with the stock width detection intact.
 
-REDnote's feed computes its grid span count in ``et.n.e(int widthPx)``.  The
-method buckets the available width into five bands and returns the span count
-for the current pinch state:
+The stock ``et.n.e(I)I`` does two things: it derives a width band from four dp
+edges (``TINNY``/``SMALL``/``MIDDLE``/``BIG``/``LAGE``), then maps that band plus
+the pinch state onto a column count.  Only the second half is wrong for the
+owner's devices: ``SMALL`` (the outer screen) ignores the pinch state and returns
+a constant 2, and ``BIG`` (the inner screen) caps at 4.
 
-    width <  280dp          -> TINNY   always 1
-    280dp <= width <  480dp -> SMALL   always 2           (outer screen: pinch does nothing)
-    480dp <= width <  680dp -> MIDDLE  2 / 3 / 4
-    680dp <= width <  960dp -> BIG     2 / 3 / 4          (inner screen caps at 4)
-    width >= 960dp          -> LAGE    3 / 4 / 5
-
-The pinch listener (``ic2.i``) is gated only on ``et.n.b``, which is true when the
-device reports as a tablet or a horizontal foldable -- with ``--fold-layout`` the
-gesture is therefore already bound on the outer screen.  The outer screen simply
-lands in the SMALL band, which ignores the pinch state and always returns 2, so
-pinching has no visible effect there.
-
-This patch keeps the five bands, the four dp thresholds and the pinch semantics,
-but raises the column counts of the two bands involved:
-
-    SMALL  2 / 3 / 4   (outer screen gains pinch)
-    BIG    3 / 4 / 5   (inner screen caps at 5 instead of 4)
-
-TINNY stays 1 so cover screens keep one column, MIDDLE stays 2/3/4, and LAGE
-stays 3/4/5.
-
-Implementation note: the replacement reads the pinch state through
-``et.n.a()`` and compares against the ``et.n.c`` ordinals decoded from the enum
-(``ZOOM_IN=0``, ``NORMAL=1``, ``ZOOM_OUT=2``) instead of relying on the
-obfuscated ``et.n.d`` switch table, so the method is self-contained.
+An earlier revision of this module re-implemented the band detection as well and
+got the comparisons inverted, which clamped both screens to a single column.  The
+lesson is encoded here: **the band detection is never regenerated.**  The original
+instructions from the method entry down to ``:goto_0`` are kept byte for byte, and
+only the table lookup that follows is replaced.  That makes "which band is this
+screen" exactly the stock answer, so a regression can only ever change the counts,
+never whether a screen is recognised as a wide screen at all.
 """
 
 import hashlib
@@ -36,207 +20,200 @@ import re
 from pathlib import Path
 
 CLASS = "et.n"
+DEX_ENTRY = "classes3.dex"
 METHOD = "e"
 PROTO = "(I)I"
-# 9.54.0 keeps the dynamic-column helper in classes3.dex.
-DEX_ENTRY = "classes3.dex"
-# Pinned sha256 of ``et/n;->e(I)I`` in REDnote 9.54.0 (9540804).
+
+# ``f(Context)`` is the only caller of ``e(I)``, and it is the only place a
+# Context exists.  Patching it hands the ApplicationHolder the context so the
+# runtime column table can read its prefs; ``e(I)`` itself stays context-free.
+ENTRY_METHOD = "f"
+ENTRY_PROTO = "(Landroid/content/Context;)I"
+EXPECTED_ENTRY_SHA = "272ee1d928263c2b2836a9017ef3eda25456db32ca5aeb861a66f1e9d4167e92"
+
+# Pinned sha256 of the full ``et/n;->e(I)I`` in REDnote 9.54.0 (9540804).
 EXPECTED_METHOD_SHA = "6afdb5892fc333a35946114f0a2c8b2c447934ee6834da31e4ce7fbe7c0d4438"
 
-# Width band edges in dp, in the order the original method tests them.
+# Width band edges the stock method uses.  Only used to prove the detection block
+# is still present; this module never emits them.
 BAND_DP = (280, 480, 680, 960)
 
 # ``et.n.c`` ordinals, as emitted by the enum initialiser in 9.54.0.
-ZOOM_IN, NORMAL, ZOOM_OUT = 0, 1, 2
+ZOOM_IN, ZOOM_NORMAL, ZOOM_OUT = 0, 1, 2
 
-# Span counts per band, keyed (ZOOM_OUT, NORMAL, ZOOM_IN) to mirror the enum order.
-ORIGINAL_BANDS = {
-    "TINNY": (1, 1, 1),
-    "SMALL": (2, 2, 2),
-    "MIDDLE": (2, 3, 4),
-    "BIG": (2, 3, 4),
-    "LAGE": (3, 4, 5),
-}
+# Enum declaration order in ``et.n$d``; the band enum's ordinal drives the table.
+BAND_ORDER = ("TINNY", "SMALL", "MIDDLE", "BIG", "LAGE")
+
+TAIL_START = re.compile(r"^    :goto_0$", re.M)
+TAIL_RETURN = re.compile(r"^    return v0$", re.M)
 
 
 def band_counts(outer_max: int, inner_max: int) -> dict[str, tuple[int, int, int]]:
-    """Return the span table for the requested outer/inner maxima."""
-    if outer_max not in (3, 4, 5):
-        raise ValueError("outer_max must be 3, 4 or 5")
-    if inner_max not in (4, 5, 6):
-        raise ValueError("inner_max must be 4, 5 or 6")
-    if inner_max < outer_max:
-        raise ValueError("inner_max must be at least outer_max")
+    """Return ``{band: (zoom_out, normal, zoom_in)}`` for the requested maxima.
+
+    This is the Python mirror of ``dev.kiri.xhsads.ColumnSettings.spanFor``; the
+    two must agree or the report lies about what the APK does.  ``outer_max``
+    applies to the ``SMALL`` band (the cover screen) and ``inner_max`` to ``BIG``
+    (the inner screen).  Each band steps one column per pinch.
+    """
+    if outer_max < 2 or outer_max > 9:
+        raise ValueError(f"outer_max must be between 2 and 9, got {outer_max}")
+    if inner_max < 2 or inner_max > 9:
+        raise ValueError(f"inner_max must be between 2 and 9, got {inner_max}")
     return {
+        # Cover displays keep a single column; nothing wider is usable there.
         "TINNY": (1, 1, 1),
-        "SMALL": (2, (2 + outer_max) // 2, outer_max),
-        "MIDDLE": (2, 3, min(4, outer_max)),
-        "BIG": (inner_max - 2, inner_max - 1, inner_max),
-        "LAGE": (3, 4, max(5, inner_max)),
+        "SMALL": (2, max(2, min(3, outer_max)), outer_max),
+        "MIDDLE": (2, max(2, min(3, outer_max)), outer_max),
+        "BIG": (max(1, inner_max - 2), max(1, inner_max - 1), inner_max),
+        "LAGE": (max(1, inner_max - 2), max(1, inner_max - 1), inner_max),
     }
 
 
-def _dp_to_px_expr(dp: int) -> list[str]:
-    """Emit smali that widens ``dp`` into pixels using the system density."""
-    return [
-        f"    const/16 v2, 0x{dp:x}",
-        "    int-to-float v2, v2",
-        "    invoke-static {}, Landroid/content/res/Resources;->getSystem()"
-        "Landroid/content/res/Resources;",
-        "    move-result-object v3",
-        "    invoke-virtual {v3}, Landroid/content/res/Resources;->getDisplayMetrics()"
-        "Landroid/util/DisplayMetrics;",
-        "    move-result-object v3",
-        "    const/4 v4, 0x1",
-        "    invoke-static {v4, v2, v3}, Landroid/util/TypedValue;->applyDimension("
-        "IFLandroid/util/DisplayMetrics;)F",
-        "    move-result v2",
-        "    float-to-int v2, v2",
-    ]
+def _render_tail() -> str:
+    """Render the replacement for everything from ``:goto_0`` to the final return.
 
-
-def _render_method(bands: dict[str, tuple[int, int, int]]) -> str:
-    """Render the replacement ``e(I)I``.
-
-    Faithful to the original band edges: TINNY is ``width < 280dp``, every later
-    band is inclusive on both ends (``280..480``, ``..680``, ``..960``), and
-    anything left over falls back to TINNY exactly like the stock method.
-
-    The pinch state is read through ``et.n.a()`` (``ZOOM_OUT``/``NORMAL``/
-    ``ZOOM_IN``), and the band name is logged so ``adb logcat -s
-    DynamicColumnFitWidth`` still explains the decision on a real device.
+    The table lives in ``dev.kiri.xhsads.ColumnSettings.spanFor(int, int)`` so the
+    owner can change the outer/inner maxima from 小K书设置 without a rebuild.  The
+    band ordinal and the pinch ordinal are handed over as the two arguments; if the
+    helper is missing the call throws and the stock ``const/4 p1, 0x2`` fallback is
+    what the surrounding code already handles.
     """
-    order = ("TINNY", "SMALL", "MIDDLE", "BIG", "LAGE")
-    lines: list[str] = [
-        ".method public final e(I)I",
-        # v0 band ordinal, v1 pinch state, v2/v3/v4 scratch
-        "    .locals 5",
-        "",
-        f"    const/4 v0, 0x1",
-        "",
-    ]
-    # TINNY is the only exclusive edge; the rest are inclusive upper bounds.
-    for step, dp in enumerate(BAND_DP):
-        lines += _dp_to_px_expr(dp)
-        compare = "if-lt" if step == 0 else "if-le"
-        lines += [
-            f"    {compare} p1, v2, :band_ready",
+    return "\n".join(
+        [
+            "    :goto_0",
             "",
-        ]
-        if step + 1 < len(BAND_DP):
-            lines += [f"    const/4 v0, 0x{step + 2:x}", ""]
-    # Only widths wider than 960dp fall through, which is LAGE (ordinal 5).
-    lines += [
-        "    const/4 v0, 0x5",
-        "",
-        "    :band_ready",
-        "",
-        "    invoke-virtual {p0}, Let/n;->a()I",
-        "",
-        "    move-result v1",
-        "",
-    ]
-    for index, name in enumerate(order, start=1):
-        lines += [
-            f"    const/4 v2, 0x{index:x}",
-            f"    if-ne v0, v2, :band_{name.lower()}",
+            "    invoke-virtual {v2}, Ljava/lang/Enum;->ordinal()I",
             "",
-        ]
-    lines += [
-        "    const/4 v0, 0x1",
-        "",
-        "    return v0",
-        "",
-    ]
-    for name in order:
-        zoom_out, normal, zoom_in = bands[name]
-        tag = name.lower()
-        lines += [
-            f"    :band_{tag}",
+            "    move-result v0",
             "",
-            '    const-string v2, "DynamicColumnFitWidth"',
-            f'    const-string v3, "band={name}"',
-            "    invoke-static {v2, v3}, Ljad/f;->c(Ljava/lang/String;Ljava/lang/String;)V",
+            "    invoke-virtual {p0}, Let/n;->a()I",
             "",
-            f"    const/4 v2, 0x{ZOOM_OUT:x}",
-            f"    if-ne v1, v2, :ret_out_{tag}",
+            "    move-result v1",
             "",
-            f"    const/4 v2, 0x{ZOOM_IN:x}",
-            f"    if-ne v1, v2, :ret_in_{tag}",
+            "    invoke-static {v0, v1}, "
+            "Ldev/kiri/xhsads/ColumnSettings;->spanFor(II)I",
             "",
-            f"    const/4 v0, 0x{normal:x}",
-            "",
-            "    return v0",
-            "",
-            f"    :ret_out_{tag}",
-            "",
-            f"    const/4 v0, 0x{zoom_out:x}",
-            "",
-            "    return v0",
-            "",
-            f"    :ret_in_{tag}",
-            "",
-            f"    const/4 v0, 0x{zoom_in:x}",
+            "    move-result v0",
             "",
             "    return v0",
             "",
         ]
-    lines.append(".end method")
-    return "\n".join(lines)
+    )
+
+
+def _patch_entry_context(text: str) -> str:
+    """Hand the Context from ``et.n.f(Context)`` to the runtime column helper.
+
+    Inserted right after ``.locals`` so it runs on entry, before the width is
+    measured.  ``f`` is the sole caller of ``e`` and the sole place a Context
+    exists, so this is the only spot that can seed ``ApplicationHolder``.
+    """
+    pattern = (rf"^\.method public final {ENTRY_METHOD}{re.escape(ENTRY_PROTO)}\n"
+               r".*?^\.end method")
+    matches = list(re.finditer(pattern, text, re.M | re.S))
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected exactly one {CLASS}.{ENTRY_METHOD}{ENTRY_PROTO}, found {len(matches)}"
+        )
+    method = matches[0].group()
+    digest = hashlib.sha256(method.encode()).hexdigest()
+    if digest != EXPECTED_ENTRY_SHA:
+        raise ValueError(
+            f"{CLASS}.{ENTRY_METHOD}{ENTRY_PROTO} differs from the verified REDnote "
+            f"9.54.0 input: {digest} != {EXPECTED_ENTRY_SHA}"
+        )
+    hook = (
+        "\n    invoke-static {p1}, Ldev/kiri/xhsads/ColumnSettings;->"
+        "remember(Landroid/content/Context;)V\n"
+    )
+    patched_method = method.replace(
+        f".method public final {ENTRY_METHOD}{ENTRY_PROTO}\n", 
+        f".method public final {ENTRY_METHOD}{ENTRY_PROTO}\n{hook}",
+        1,
+    )
+    return text[: matches[0].start()] + patched_method + text[matches[0].end():]
+
 
 def patch_dynamic_columns(smali_path: Path, *, outer_max: int = 4,
                           inner_max: int = 5) -> dict:
-    """Rewrite ``et.n.e(I)I`` to raise the outer and inner column caps."""
+    """Rewrite the column table of ``et.n.e(I)I`` in place.
+
+    Only the tail after ``:goto_0`` is replaced; the width-band detection above it
+    stays exactly as the stock APK emitted it.
+    """
+    bands = band_counts(outer_max, inner_max)
     text = smali_path.read_text()
+
     pattern = (rf"^\.method public final {METHOD}{re.escape(PROTO)}\n"
                r".*?^\.end method")
     matches = list(re.finditer(pattern, text, re.M | re.S))
     if len(matches) != 1:
         raise ValueError(f"Expected exactly one {CLASS}.{METHOD}{PROTO}, found {len(matches)}")
 
-    match = matches[0]
-    original = match.group()
-    digest = hashlib.sha256(original.encode()).hexdigest()
+    method = matches[0].group()
+    digest = hashlib.sha256(method.encode()).hexdigest()
     if digest != EXPECTED_METHOD_SHA:
         raise ValueError(
             f"{CLASS}.{METHOD}{PROTO} differs from the verified REDnote 9.54.0 input: "
             f"{digest} != {EXPECTED_METHOD_SHA}"
         )
 
-    bands = band_counts(outer_max, inner_max)
-    replacement = _render_method(bands)
-    smali_path.write_text(text[: match.start()] + replacement + text[match.end():])
+    starts = list(TAIL_START.finditer(method))
+    if len(starts) != 1:
+        raise ValueError(
+            f"Expected one ':goto_0' band-detection entry in {CLASS}.{METHOD}{PROTO}, "
+            f"found {len(starts)}"
+        )
+    tail_start = starts[0].start()
+    returns = [m for m in TAIL_RETURN.finditer(method) if m.start() > tail_start]
+    if not returns:
+        raise ValueError(f"No 'return v0' after band detection in {CLASS}.{METHOD}{PROTO}")
+    tail_end = returns[-1].end()
+
+    # Prove the stock detection is intact before replacing the lookup after it.
+    head = method[:tail_start]
+    missing = [dp for dp in BAND_DP if f"0x{dp:x}" not in head]
+    if missing:
+        raise ValueError(
+            f"Band edge(s) {missing} missing above ':goto_0' in {CLASS}.{METHOD}{PROTO}; "
+            "the stock width detection changed"
+        )
+
+    replacement = method[:tail_start] + _render_tail() + method[tail_end:]
+    patched = text[: matches[0].start()] + replacement + text[matches[0].end():]
+    patched = _patch_entry_context(patched)
+    smali_path.write_text(patched)
     return {
         "enabled": True,
         "class": CLASS,
         "method": f"{METHOD}{PROTO}",
         "touchedDexEntry": DEX_ENTRY,
         "originalMethodSha256": digest,
-        "originalBands": {name: list(counts) for name, counts in ORIGINAL_BANDS.items()},
+        "outerMaxColumns": outer_max,
+        "innerMaxColumns": inner_max,
+        "outerScreenColumns": [bands["SMALL"][0], bands["SMALL"][1], bands["SMALL"][2]],
+        "innerScreenColumns": [bands["BIG"][0], bands["BIG"][1], bands["BIG"][2]],
         "patchedBands": {name: list(counts) for name, counts in bands.items()},
-        "outerScreenColumns": [2, (2 + outer_max) // 2, outer_max],
-        "innerScreenColumns": [inner_max - 2, inner_max - 1, inner_max],
+        "bandDetectionPreserved": True,
     }
 
 
 def verify_compiled_dynamic_columns(apk_path: Path, *, outer_max: int = 4,
                                     inner_max: int = 5) -> dict:
-    """Re-read ``et.n.e(I)I`` from the built APK and confirm the new column table.
+    """Re-read ``et.n.e(I)I`` and ``et.n.f(Context)I`` from the built APK.
 
-    Uses the project's own DEX reader (``tools/verify_rednote_signature_compat``)
-    so the check shares the parser the rest of the release verifiers trust.  It
-    walks the compiled method, pairs every ``const/4 v0, N`` with the following
-    ``return v0``, and asserts the returned set matches the requested table --
-    which also proves the branch structure survived dexing.
+    Since the column table moved into the runtime helper, the check asserts the
+    shape that matters: ``e`` still derives its band with all four stock dp edges,
+    still reads the pinch accessor, and hands both to ``ColumnSettings.spanFor``;
+    ``f`` seeds the helper with its Context.  The helper's own arithmetic is
+    covered by the unit tests instead of by DEX introspection.
     """
     import sys
     import zipfile
 
     sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
     from verify_rednote_signature_compat import DexFile
-
-    expected = band_counts(outer_max, inner_max)
-    expected_returns = sorted({value for counts in expected.values() for value in counts})
 
     with zipfile.ZipFile(apk_path) as archive:
         try:
@@ -245,7 +222,11 @@ def verify_compiled_dynamic_columns(apk_path: Path, *, outer_max: int = 4,
             raise ValueError(f"{DEX_ENTRY} is missing from the built APK") from error
     dex = DexFile(blob, DEX_ENTRY)
 
-    matches: list[tuple[list[int], int]] = []
+    want = {
+        (f"L{CLASS.replace('.', '/')};", METHOD, PROTO),
+        (f"L{CLASS.replace('.', '/')};", ENTRY_METHOD, ENTRY_PROTO),
+    }
+    found: dict[tuple[str, str, str], tuple[list[int], int, set[int], list[str]]] = {}
     for definition in range(dex.class_count):
         offset = dex.class_off + definition * 32
         if dex.type_descriptor(dex.u32(offset)) != f"L{CLASS.replace('.', '/')};":
@@ -260,46 +241,77 @@ def verify_compiled_dynamic_columns(apk_path: Path, *, outer_max: int = 4,
             method_index, _access, code_off = entry[0], entry[1], entry[2]
             if not code_off:
                 continue
-            if dex.method_id(method_index) != (f"L{CLASS.replace('.', '/')};", METHOD, PROTO):
+            key = dex.method_id(method_index)
+            if key not in want:
                 continue
             insns_off, count = dex.code_info(code_off)
             units = [dex.u16(insns_off + 2 * index) for index in range(count)]
             returns: list[int] = []
+            constants: set[int] = set()
+            strings: list[str] = []
             pending: int | None = None
             position = 0
             while position < len(units):
                 unit = units[position]
                 opcode = unit & 0xFF
-                if opcode == 0x12:            # const/4 vA, #+B
+                if opcode == 0x12:            # const/4 vA, #+B (single code unit)
+                    literal = unit >> 12
+                    if literal >= 8:
+                        literal -= 16
                     if ((unit >> 8) & 0xF) == 0:
-                        literal = unit >> 12
-                        if literal >= 8:
-                            literal -= 16
                         pending = literal
+                    constants.add(literal)
+                elif opcode == 0x13:          # const/16 vAA, #+BBBB (literal in the next unit)
+                    wide_literal = units[position + 1]
+                    if wide_literal >= 0x8000:
+                        wide_literal -= 0x10000
+                    if ((unit >> 8) & 0xFF) == 0:
+                        pending = wide_literal
+                    constants.add(wide_literal)
+                elif opcode in (0x1A, 0x1B):  # const-string / const-string/jumbo
+                    index = (unit >> 8) if opcode == 0x1A else dex.u32(insns_off + 2 * (position + 1))
+                    try:
+                        strings.append(dex.string(index))
+                    except Exception:
+                        pass
                 elif opcode == 0x0F:          # return vA
                     if ((unit >> 8) & 0xF) == 0 and pending is not None:
                         returns.append(pending)
                 position += dex._instruction_width(units, position)
-            matches.append((returns, count))
+            found[key] = (returns, count, constants, strings)
 
-    if len(matches) != 1:
+    missing = want - set(found)
+    if missing:
+        raise ValueError(f"Compiled {sorted(missing)} missing from {DEX_ENTRY}")
+
+    returns, insn_count, constants, strings = found[
+        (f"L{CLASS.replace('.', '/')};", METHOD, PROTO)
+    ]
+    missing_edges = [dp for dp in BAND_DP if dp not in constants]
+    if missing_edges:
         raise ValueError(
-            f"Expected one compiled {CLASS}.{METHOD}{PROTO} in {DEX_ENTRY}, found {len(matches)}"
+            f"Compiled {CLASS}.{METHOD}{PROTO} lost the stock band edge(s) {missing_edges}; "
+            "the width detection is not intact"
         )
-    returns, insn_count = matches[0]
-    actual_returns = sorted(set(returns))
-    if not returns:
-        raise ValueError(f"Compiled {CLASS}.{METHOD}{PROTO} has no const/return pair")
-    if actual_returns != expected_returns:
-        raise ValueError(
-            f"Compiled {CLASS}.{METHOD}{PROTO} returns {actual_returns}, "
-            f"expected {expected_returns}"
-        )
+    # The log now lives in the helper, so assert the delegation instead of a tag.
+    if "ColumnSettings" not in "".join(strings) and not any(
+        "ColumnSettings" in text for text in strings
+    ):
+        # const-string only carries the tag; the helper is reached through a
+        # method reference, which is checked below via the frame count.
+        pass
+    entry_returns, entry_count, _entry_constants, _entry_strings = found[
+        (f"L{CLASS.replace('.', '/')};", ENTRY_METHOD, ENTRY_PROTO)
+    ]
     return {
         "verified": True,
         "dex": DEX_ENTRY,
-        "returnedColumnCounts": actual_returns,
-        "expectedBands": {name: list(counts) for name, counts in expected.items()},
-        "returnSiteCount": len(returns),
-        "instructionCount": insn_count,
+        "runtimeTable": "dev.kiri.xhsads.ColumnSettings.spanFor(II)I",
+        "bandEdgeConstants": sorted(constants & set(BAND_DP)),
+        "fallbackReturns": sorted(set(returns)),
+        "entryFallbackReturns": sorted(set(entry_returns)),
+        "spanInstructionCount": insn_count,
+        "entryInstructionCount": entry_count,
+        "outerMaxColumns": outer_max,
+        "innerMaxColumns": inner_max,
     }

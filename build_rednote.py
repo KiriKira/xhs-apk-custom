@@ -1770,33 +1770,6 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 "--fold-layout changed DeviceInfoContainer.isHorizontalFolderDevice() and isPad() to return true."
             )
 
-        dynamic_columns_audit: dict[str, Any] = {
-            "enabled": bool(args.dynamic_columns),
-            "touchedDexEntries": [],
-        }
-        if args.dynamic_columns:
-            try:
-                outer_text, inner_text = args.dynamic_columns.split(",")
-                outer_max, inner_max = int(outer_text), int(inner_text)
-            except ValueError as error:
-                raise BuildError(
-                    "--dynamic-columns expects OUTER,INNER such as '4,5'"
-                ) from error
-            dynamic_columns_smali = find_obfuscated_smali_class(
-                decoded_dir, DYNAMIC_COLUMNS_CLASS
-            )
-            dynamic_columns_audit = patch_dynamic_columns(
-                dynamic_columns_smali, outer_max=outer_max, inner_max=inner_max
-            )
-            touched_dex_names.add(dynamic_columns_audit["touchedDexEntry"])
-            warnings.append(
-                "--dynamic-columns rewrote "
-                f"{DYNAMIC_COLUMNS_CLASS}.e(I)I: outer screen pinches through "
-                f"2-{outer_max} columns, inner screen through "
-                f"{inner_max - 2}-{inner_max} columns. Column counts still come from "
-                "the device width band, so a screen narrower than 280dp stays single column."
-            )
-
         signature_compat_audit: dict[str, Any] = {"enabled": False}
         signature_compat_added_entries: dict[str, Path] = {}
         signature_compat_added_names: set[str] = set()
@@ -1915,6 +1888,8 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                         {settings_dex, "classes19.dex"} if args.hide_feed_ads else {settings_dex}
                     ),
                     "helperClasses": [
+                        "dev.kiri.xhsads.ColumnSettings",
+                        "dev.kiri.xhsads.ApplicationHolder",
                         "dev.kiri.xhsads.BlockSettings",
                         "dev.kiri.xhsads.FeedKeywordFilter",
                         "dev.kiri.xhsads.BlockRow",
@@ -1947,6 +1922,48 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
                 )
             except Exception as exc:
                 raise BuildError(f"Could not prepare keyword block patch: {exc}") from exc
+
+        # --dynamic-columns shares the dev.kiri.xhsads helper DEX that --block-words
+        # builds (ColumnSettings lives there), so it must run after it.
+        dynamic_columns_audit: dict[str, Any] = {
+            "enabled": bool(args.dynamic_columns),
+            "touchedDexEntries": [],
+        }
+        if args.dynamic_columns:
+            if not args.block_words:
+                raise BuildError(
+                    "--dynamic-columns requires --block-words: the runtime column table and "
+                    "its 小K书设置 controls live in the dev.kiri.xhsads helper DEX"
+                )
+            try:
+                outer_text, inner_text = args.dynamic_columns.split(",")
+                outer_max, inner_max = int(outer_text), int(inner_text)
+            except ValueError as error:
+                raise BuildError(
+                    "--dynamic-columns expects OUTER,INNER such as '4,5'"
+                ) from error
+            try:
+                dynamic_columns_smali = find_obfuscated_smali_class(
+                    decoded_dir, DYNAMIC_COLUMNS_CLASS
+                )
+                dynamic_columns_audit = patch_dynamic_columns(
+                    dynamic_columns_smali, outer_max=outer_max, inner_max=inner_max
+                )
+                dynamic_columns_audit["targetDexEntry"] = dex_name_for_smali(
+                    decoded_dir, dynamic_columns_smali
+                )
+                touched_dex_names.add(dynamic_columns_audit["targetDexEntry"])
+                warnings.append(
+                    "--dynamic-columns routes "
+                    f"{DYNAMIC_COLUMNS_CLASS}.e(I) through "
+                    "dev.kiri.xhsads.ColumnSettings.spanFor(II): pinch steps through 2.."
+                    f"{outer_max} columns on the outer screen and "
+                    f"{max(1, inner_max - 2)}..{inner_max} on the inner screen. Both maxima "
+                    "can be changed in 小K书设置 without rebuilding; the width band is still "
+                    "the stock one."
+                )
+            except Exception as exc:
+                raise BuildError(f"Could not prepare the dynamic-column patch: {exc}") from exc
 
         im_diag_audit: dict[str, Any] = {"enabled": False}
         if args.im_diag:
@@ -2158,8 +2175,8 @@ def build(args: argparse.Namespace) -> tuple[Path, Path, dict[str, Any]]:
         if args.dynamic_columns:
             dynamic_columns_audit["compiledVerification"] = verify_compiled_dynamic_columns(
                 output_path,
-                outer_max=dynamic_columns_audit["outerScreenColumns"][-1],
-                inner_max=dynamic_columns_audit["innerScreenColumns"][-1],
+                outer_max=dynamic_columns_audit["outerMaxColumns"],
+                inner_max=dynamic_columns_audit["innerMaxColumns"],
             )
         report = {
             "schemaVersion": 1,

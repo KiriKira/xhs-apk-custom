@@ -517,7 +517,10 @@ public final class BlockWordsActivity extends Activity {
     private static final String KEY_RECENT = "debug_recent";
 
     private EditText input;
+    private EditText outerInput;
+    private EditText innerInput;
     private TextView diagnostics;
+    private TextView columnDiagnostics;
     private TextView captureLog;
     private Button debugToggle;
 
@@ -632,6 +635,130 @@ public final class BlockWordsActivity extends Activity {
         root.addView(buttons, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        // ---- feed column configuration ----
+        TextView columnTitle = new TextView(this);
+        columnTitle.setText("信息流列数");
+        columnTitle.setTextSize(14f);
+        columnTitle.setTextColor(Color.BLACK);
+        LinearLayout.LayoutParams columnTitleParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        columnTitleParams.topMargin = dp(18);
+        root.addView(columnTitle, columnTitleParams);
+
+        TextView columnHint = new TextView(this);
+        columnHint.setText("外屏＝折叠后的窄屏，内屏＝展开后的大屏。\\n"
+                + "双指捏合按 缩小 / 正常 / 放大 三档切换列数。\\n"
+                + "外屏该档位的最小值固定为 2 列，最大值取下面填的数。");
+        columnHint.setTextSize(12f);
+        columnHint.setTextColor(Color.rgb(0x60, 0x60, 0x60));
+        columnHint.setLineSpacing(dp(3), 1f);
+        LinearLayout.LayoutParams columnHintParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        columnHintParams.topMargin = dp(4);
+        root.addView(columnHint, columnHintParams);
+
+        LinearLayout columnRow = new LinearLayout(this);
+        columnRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams columnRowParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        columnRowParams.topMargin = dp(8);
+        root.addView(columnRow, columnRowParams);
+
+        TextView outerLabel = new TextView(this);
+        outerLabel.setText("外屏最多");
+        outerLabel.setTextSize(13f);
+        outerLabel.setTextColor(Color.BLACK);
+        columnRow.addView(outerLabel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        outerInput = new EditText(this);
+        outerInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        outerInput.setText(String.valueOf(ColumnSettings.outerMax(this)));
+        outerInput.setGravity(Gravity.CENTER);
+        columnRow.addView(outerInput, new LinearLayout.LayoutParams(dp(56),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView columnUnit = new TextView(this);
+        columnUnit.setText("列   内屏最多");
+        columnUnit.setTextSize(13f);
+        columnUnit.setTextColor(Color.BLACK);
+        columnRow.addView(columnUnit, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        innerInput = new EditText(this);
+        innerInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        innerInput.setText(String.valueOf(ColumnSettings.innerMax(this)));
+        innerInput.setGravity(Gravity.CENTER);
+        columnRow.addView(innerInput, new LinearLayout.LayoutParams(dp(56),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView innerUnit = new TextView(this);
+        innerUnit.setText("列");
+        innerUnit.setTextSize(13f);
+        innerUnit.setTextColor(Color.BLACK);
+        columnRow.addView(innerUnit, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout columnButtons = new LinearLayout(this);
+        columnButtons.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams columnButtonsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        columnButtonsParams.topMargin = dp(8);
+        root.addView(columnButtons, columnButtonsParams);
+
+        Button saveColumns = new Button(this);
+        saveColumns.setText("保存列数");
+        saveColumns.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                saveColumnInputs();
+                Toast.makeText(BlockWordsActivity.this,
+                        "已保存：外屏最多 " + ColumnSettings.outerMax(BlockWordsActivity.this)
+                                + " 列，内屏最多 " + ColumnSettings.innerMax(BlockWordsActivity.this)
+                                + " 列（返回信息流生效）",
+                        Toast.LENGTH_LONG).show();
+                refreshDiagnostics();
+            }
+        });
+        columnButtons.addView(saveColumns, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button exportLog = new Button(this);
+        exportLog.setText("导出诊断 log");
+        exportLog.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                exportDiagnosticLog();
+            }
+        });
+        columnButtons.addView(exportLog, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button resetColumns = new Button(this);
+        resetColumns.setText("恢复默认");
+        resetColumns.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                ColumnSettings.save(BlockWordsActivity.this, 4, 5);
+                outerInput.setText("4");
+                innerInput.setText("5");
+                refreshDiagnostics();
+            }
+        });
+        columnButtons.addView(resetColumns, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        columnDiagnostics = new TextView(this);
+        columnDiagnostics.setTextSize(11f);
+        columnDiagnostics.setTextColor(Color.rgb(0x40, 0x40, 0x40));
+        columnDiagnostics.setBackgroundColor(Color.rgb(0xF2, 0xF7, 0xFF));
+        columnDiagnostics.setPadding(dp(8), dp(8), dp(8), dp(8));
+        columnDiagnostics.setTextIsSelectable(true);
+        LinearLayout.LayoutParams columnDiagParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        columnDiagParams.topMargin = dp(8);
+        root.addView(columnDiagnostics, columnDiagParams);
+
         captureLog = new TextView(this);
         captureLog.setTextSize(10f);
         captureLog.setTextColor(Color.rgb(0x33, 0x33, 0x33));
@@ -672,7 +799,105 @@ public final class BlockWordsActivity extends Activity {
             if (diagnostics != null) {
                 diagnostics.setText(BlockSettings.diagnostics(this));
             }
+            refreshColumnDiagnostics();
         } catch (Throwable ignored) {
+        }
+    }
+
+    private void refreshColumnDiagnostics() {
+        try {
+            if (columnDiagnostics != null) {
+                columnDiagnostics.setText(ColumnSettings.screenDescription(this)
+                        + "\n\n最近判定记录：\n"
+                        + tailOrNone(ColumnSettings.log(this), 12));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String tailOrNone(String value, int maxLines) {
+        if (value == null || value.length() == 0) {
+            return "(还没有，去信息流捏合一下)";
+        }
+        String[] lines = value.split("\n");
+        StringBuilder builder = new StringBuilder();
+        int start = Math.max(0, lines.length - maxLines);
+        for (int index = start; index < lines.length; index++) {
+            builder.append(lines[index]).append('\n');
+        }
+        return builder.toString().trim();
+    }
+
+    private void saveColumnInputs() {
+        try {
+            int outer = parseInt(outerInput == null ? null : outerInput.getText().toString(), 4);
+            int inner = parseInt(innerInput == null ? null : innerInput.getText().toString(), 5);
+            ColumnSettings.save(this, outer, inner);
+            if (outerInput != null) {
+                outerInput.setText(String.valueOf(ColumnSettings.outerMax(this)));
+            }
+            if (innerInput != null) {
+                innerInput.setText(String.valueOf(ColumnSettings.innerMax(this)));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static int parseInt(String value, int fallback) {
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            if (parsed < 1) {
+                return 1;
+            }
+            return parsed > 9 ? 9 : parsed;
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    /**
+     * Writes one plain-text report to the app's external files dir and offers it
+     * through the system share sheet, so the owner never has to pull logcat.
+     */
+    private void exportDiagnosticLog() {
+        try {
+            StringBuilder body = new StringBuilder();
+            body.append("小K书信息流列数诊断\n")
+                    .append("时间：").append(new java.util.Date().toString()).append('\n')
+                    .append('\n').append(ColumnSettings.screenDescription(this)).append('\n')
+                    .append("\n=== 判定记录（最新在前）===\n")
+                    .append(tailOrNone(ColumnSettings.log(this), 200)).append('\n')
+                    .append("\n=== 屏蔽词诊断 ===\n")
+                    .append(BlockSettings.diagnostics(this)).append('\n')
+                    .append("\n=== 卡片抓取 ===\n")
+                    .append(BlockSettings.prefs(this).getString(KEY_RECENT, "(无)")).append('\n');
+
+            java.io.File dir = getExternalFilesDir(null);
+            if (dir == null) {
+                dir = getFilesDir();
+            }
+            java.io.File out = new java.io.File(dir,
+                    "xiaokshu-columns-" + System.currentTimeMillis() + ".txt");
+            java.io.FileOutputStream stream = new java.io.FileOutputStream(out);
+            try {
+                stream.write(body.toString().getBytes("UTF-8"));
+            } finally {
+                stream.close();
+            }
+
+            android.content.Intent share = new android.content.Intent(
+                    android.content.Intent.ACTION_SEND);
+            share.setType("text/plain");
+            share.putExtra(android.content.Intent.EXTRA_SUBJECT, "小K书列数诊断");
+            share.putExtra(android.content.Intent.EXTRA_TEXT, body.toString());
+            share.putExtra(android.content.Intent.EXTRA_STREAM,
+                    android.net.Uri.fromFile(out));
+            share.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(android.content.Intent.createChooser(share, "导出诊断 log"));
+            Toast.makeText(this, "已生成：" + out.getAbsolutePath(),
+                    Toast.LENGTH_LONG).show();
+        } catch (Throwable error) {
+            Toast.makeText(this, "导出失败：" + error, Toast.LENGTH_LONG).show();
         }
     }
 
@@ -700,6 +925,260 @@ public final class BlockWordsActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+}
+""",
+    "ColumnSettings.java": r"""package dev.kiri.xhsads;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.util.DisplayMetrics;
+
+/**
+ * Runtime column table for the feed grid, editable from 小K书设置.
+ *
+ * The patched {@code et.n.e(int)} hands the width band ordinal and the pinch
+ * ordinal to {@link #spanFor(int, int)} instead of using a baked-in table, so the
+ * outer/inner maxima can be changed on the device without rebuilding the APK.
+ * Every decision is recorded together with the measured width so the exported log
+ * shows exactly which band this screen landed in.
+ *
+ * Band ordinals follow {@code et.n$d}: TINNY=0, SMALL=1, MIDDLE=2, BIG=3, LAGE=4.
+ * Pinch ordinals follow {@code et.n$c}: ZOOM_IN=0, NORMAL=1, ZOOM_OUT=2.
+ */
+public final class ColumnSettings {
+    private static final String PREFS = "kiri_xhs_columns";
+    private static final String KEY_OUTER = "outer_max";
+    private static final String KEY_INNER = "inner_max";
+    private static final String KEY_LOG = "decision_log";
+    private static final String LOG_TAG = "DynamicColumnFitWidth";
+
+    private static final int DEFAULT_OUTER = 4;
+    private static final int DEFAULT_INNER = 5;
+    private static final int LOG_LIMIT = 4000;
+
+    /** Last decision, mirrored for the settings page. */
+    private static volatile String lastDecision = "";
+
+    private ColumnSettings() {
+    }
+
+    public static SharedPreferences prefs(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    public static int outerMax(Context context) {
+        try {
+            return clamp(prefs(context).getInt(KEY_OUTER, DEFAULT_OUTER));
+        } catch (Throwable ignored) {
+            return DEFAULT_OUTER;
+        }
+    }
+
+    public static int innerMax(Context context) {
+        try {
+            return clamp(prefs(context).getInt(KEY_INNER, DEFAULT_INNER));
+        } catch (Throwable ignored) {
+            return DEFAULT_INNER;
+        }
+    }
+
+    public static void save(Context context, int outer, int inner) {
+        try {
+            prefs(context).edit()
+                    .putInt(KEY_OUTER, clamp(outer))
+                    .putInt(KEY_INNER, clamp(inner))
+                    .apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static int clamp(int value) {
+        if (value < 1) {
+            return 1;
+        }
+        return value > 9 ? 9 : value;
+    }
+
+    /**
+     * Called from the patched {@code et.n.e(int)}. Must never throw: the feed reads
+     * this on every layout pass.
+     *
+     * <p>There is no context argument in {@code e(int)}, so the two maxima are read
+     * through {@link ApplicationHolder}, which {@code et.n.f(Context)} fills in.
+     *
+     * @param band  0=TINNY 1=SMALL 2=MIDDLE 3=BIG 4=LAGE
+     * @param pinch 0=ZOOM_IN 1=NORMAL 2=ZOOM_OUT
+     */
+    public static int spanFor(int band, int pinch) {
+        try {
+            Context context = ApplicationHolder.get();
+            int outer = context == null ? DEFAULT_OUTER : outerMax(context);
+            int inner = context == null ? DEFAULT_INNER : innerMax(context);
+            int columns = resolve(band, pinch, outer, inner);
+            record(context, band, pinch, columns, outer, inner);
+            return columns;
+        } catch (Throwable ignored) {
+            return 2;
+        }
+    }
+
+    /** Called from the patched {@code et.n.f(Context)} so prefs are reachable. */
+    public static void remember(Context context) {
+        ApplicationHolder.install(context);
+    }
+
+    /** Mirror of the Python {@code band_counts} in rednote_dynamic_columns_patch.py. */
+    static int resolve(int band, int pinch, int outer, int inner) {
+        if (band == 0) {
+            return 1;                       // cover display: single column
+        }
+        if (band == 1 || band == 2) {       // SMALL (outer) and MIDDLE
+            if (pinch == 2) {
+                return 2;
+            }
+            if (pinch == 0) {
+                return outer;
+            }
+            return Math.max(2, Math.min(3, outer));
+        }
+        if (pinch == 2) {
+            return Math.max(1, inner - 2);
+        }
+        if (pinch == 0) {
+            return inner;
+        }
+        return Math.max(1, inner - 1);
+    }
+
+    public static String bandName(int band) {
+        switch (band) {
+            case 0:
+                return "TINNY";
+            case 1:
+                return "SMALL";
+            case 2:
+                return "MIDDLE";
+            case 3:
+                return "BIG";
+            case 4:
+                return "LAGE";
+            default:
+                return "band" + band;
+        }
+    }
+
+    public static String pinchName(int pinch) {
+        switch (pinch) {
+            case 0:
+                return "ZOOM_IN";
+            case 1:
+                return "NORMAL";
+            case 2:
+                return "ZOOM_OUT";
+            default:
+                return "pinch" + pinch;
+        }
+    }
+
+    private static void record(Context context, int band, int pinch, int columns,
+                               int outer, int inner) {
+        try {
+            String line = bandName(band) + "/" + pinchName(pinch) + " -> " + columns
+                    + " 列 (外" + outer + " 内" + inner + ")";
+            lastDecision = line;
+            android.util.Log.i(LOG_TAG, "spanCount=" + columns + " " + line);
+            if (context == null) {
+                return;
+            }
+            SharedPreferences prefs = prefs(context);
+            String existing = prefs.getString(KEY_LOG, "");
+            if (existing == null) {
+                existing = "";
+            }
+            StringBuilder builder = new StringBuilder(existing.length() + line.length() + 8);
+            builder.append(line).append('\n').append(existing);
+            String value = builder.toString();
+            if (value.length() > LOG_LIMIT) {
+                value = value.substring(0, LOG_LIMIT);
+            }
+            prefs.edit().putString(KEY_LOG, value).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static String lastDecision() {
+        return lastDecision;
+    }
+
+    public static String log(Context context) {
+        try {
+            String value = prefs(context).getString(KEY_LOG, "");
+            return value == null ? "" : value;
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    public static void clearLog(Context context) {
+        try {
+            prefs(context).edit().remove(KEY_LOG).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Human-readable screen sizes, so the log explains the measured widths. */
+    public static String screenDescription(Context context) {
+        try {
+            StringBuilder builder = new StringBuilder();
+            DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+            builder.append("当前屏幕：").append(metrics.widthPixels).append('×')
+                    .append(metrics.heightPixels).append(" px, density=")
+                    .append(metrics.density).append(", ")
+                    .append(Math.round(metrics.widthPixels / metrics.density))
+                    .append('×')
+                    .append(Math.round(metrics.heightPixels / metrics.density))
+                    .append(" dp");
+            builder.append('\n').append("设备：").append(Build.MANUFACTURER)
+                    .append(' ').append(Build.MODEL)
+                    .append(" (Android ").append(Build.VERSION.RELEASE).append(')');
+            builder.append('\n').append("配置：外屏最多 ").append(outerMax(context))
+                    .append(" 列，内屏最多 ").append(innerMax(context)).append(" 列");
+            String last = lastDecision;
+            builder.append('\n').append("最近一次判定：")
+                    .append(last == null || last.length() == 0 ? "(还没有)" : last);
+            return builder.toString();
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+}
+""",
+    "ApplicationHolder.java": r"""package dev.kiri.xhsads;
+
+import android.content.Context;
+
+/** Holds the application context so helper classes reachable from smali can read prefs. */
+public final class ApplicationHolder {
+    private static volatile Context application;
+
+    private ApplicationHolder() {
+    }
+
+    public static void install(Context context) {
+        if (context == null) {
+            return;
+        }
+        try {
+            Context app = context.getApplicationContext();
+            application = app == null ? context : app;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static Context get() {
+        return application;
     }
 }
 """,
