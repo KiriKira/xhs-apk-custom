@@ -44,11 +44,47 @@ class DynamicColumnsPatchTests(unittest.TestCase):
         self.assertIn("invoke-virtual {p0}, Let/n;->a()I", patched)
         self.assertNotIn("Let/n$e;->a:[I", patched)
 
-    def test_original_string_building_is_gone(self):
+    def test_band_edges_use_lower_exclusive_then_inclusive_upper(self):
+        """Every width above 280dp must land in its real band, not TINNY.
+
+        The first band is `width < 280dp`; the rest are inclusive on both ends.
+        Using `if-ge` for all four edges sends every screen wider than 280dp to
+        TINNY, which silently clamps both screens to the smallest step -- the
+        regression this guard exists to catch.
+        """
         patch_dynamic_columns(self.path)
         patched = self.path.read_text()
-        self.assertNotIn("DynamicColumnFitWidth", patched)
+        self.assertEqual(patched.count("if-lt p1,"), 1)
+        self.assertEqual(patched.count("if-le p1,"), 3)
+        self.assertEqual(patched.count("if-ge p1,"), 0)
+        self.assertIn("if-lt p1, v2, :band_ready", patched)
+
+    def test_band_ordinal_matches_each_threshold(self):
+        patch_dynamic_columns(self.path)
+        patched = self.path.read_text()
+        # The ordinal bumped after each edge must equal that band's 1-based index.
+        for ordinal, dp in zip(range(2, 6), BAND_DP[1:] + (960,)):
+            self.assertIn(f"const/4 v0, 0x{ordinal:x}", patched)
+        # LAGE is only reached by falling past the last edge.
+        self.assertRegex(patched, r"if-le p1, v2, :band_ready\n\n    const/4 v0, 0x5")
+
+    def test_keeps_a_diagnostic_log_for_device_triage(self):
+        patch_dynamic_columns(self.path)
+        patched = self.path.read_text()
+        self.assertIn('const-string v2, "DynamicColumnFitWidth"', patched)
+        self.assertIn("band=SMALL", patched)
+
+    def test_original_log_formatting_is_gone(self):
+        """The 200-line StringBuilder logging must not survive the rewrite.
+
+        Only the compact two-string band log is kept, so the method stays small
+        enough to assemble without touching branch-offset limits.
+        """
+        patch_dynamic_columns(self.path)
+        patched = self.path.read_text()
         self.assertNotIn("StringBuilder", patched)
+        self.assertNotIn("ScreenWidth = ", patched)
+        self.assertNotIn("currentSpanType = ", patched)
 
     def test_custom_maxima(self):
         audit = patch_dynamic_columns(self.path, outer_max=3, inner_max=4)

@@ -98,29 +98,37 @@ def _dp_to_px_expr(dp: int) -> list[str]:
 def _render_method(bands: dict[str, tuple[int, int, int]]) -> str:
     """Render the replacement ``e(I)I``.
 
-    The band ordinal (1..5 = TINNY..LAGE) is derived from the pixel width using
-    the original four dp edges, then the span count is selected from the table
-    for the current pinch state (``et.n.a()``, ordinals ``ZOOM_IN=0``,
-    ``NORMAL=1``, ``ZOOM_OUT=2``).
+    Faithful to the original band edges: TINNY is ``width < 280dp``, every later
+    band is inclusive on both ends (``280..480``, ``..680``, ``..960``), and
+    anything left over falls back to TINNY exactly like the stock method.
+
+    The pinch state is read through ``et.n.a()`` (``ZOOM_OUT``/``NORMAL``/
+    ``ZOOM_IN``), and the band name is logged so ``adb logcat -s
+    DynamicColumnFitWidth`` still explains the decision on a real device.
     """
+    order = ("TINNY", "SMALL", "MIDDLE", "BIG", "LAGE")
     lines: list[str] = [
         ".method public final e(I)I",
         # v0 band ordinal, v1 pinch state, v2/v3/v4 scratch
         "    .locals 5",
         "",
-        "    const/4 v0, 0x1",
+        f"    const/4 v0, 0x1",
         "",
     ]
-    # Walk the four edges; each satisfied edge promotes the band ordinal.
+    # TINNY is the only exclusive edge; the rest are inclusive upper bounds.
     for step, dp in enumerate(BAND_DP):
         lines += _dp_to_px_expr(dp)
+        compare = "if-lt" if step == 0 else "if-le"
         lines += [
-            f"    if-ge p1, v2, :band_ready",
-            "",
-            f"    const/4 v0, 0x{step + 2:x}",
+            f"    {compare} p1, v2, :band_ready",
             "",
         ]
+        if step + 1 < len(BAND_DP):
+            lines += [f"    const/4 v0, 0x{step + 2:x}", ""]
+    # Only widths wider than 960dp fall through, which is LAGE (ordinal 5).
     lines += [
+        "    const/4 v0, 0x5",
+        "",
         "    :band_ready",
         "",
         "    invoke-virtual {p0}, Let/n;->a()I",
@@ -128,17 +136,14 @@ def _render_method(bands: dict[str, tuple[int, int, int]]) -> str:
         "    move-result v1",
         "",
     ]
-    order = ("TINNY", "SMALL", "MIDDLE", "BIG", "LAGE")
     for index, name in enumerate(order, start=1):
-        zoom_out, normal, zoom_in = bands[name]
         lines += [
             f"    const/4 v2, 0x{index:x}",
             f"    if-ne v0, v2, :band_{name.lower()}",
             "",
         ]
-    # Only reachable if the ordinal is out of range; fall back to two columns.
     lines += [
-        "    const/4 v0, 0x2",
+        "    const/4 v0, 0x1",
         "",
         "    return v0",
         "",
@@ -148,6 +153,10 @@ def _render_method(bands: dict[str, tuple[int, int, int]]) -> str:
         tag = name.lower()
         lines += [
             f"    :band_{tag}",
+            "",
+            '    const-string v2, "DynamicColumnFitWidth"',
+            f'    const-string v3, "band={name}"',
+            "    invoke-static {v2, v3}, Ljad/f;->c(Ljava/lang/String;Ljava/lang/String;)V",
             "",
             f"    const/4 v2, 0x{ZOOM_OUT:x}",
             f"    if-ne v1, v2, :ret_out_{tag}",
@@ -174,7 +183,6 @@ def _render_method(bands: dict[str, tuple[int, int, int]]) -> str:
         ]
     lines.append(".end method")
     return "\n".join(lines)
-
 
 def patch_dynamic_columns(smali_path: Path, *, outer_max: int = 4,
                           inner_max: int = 5) -> dict:
