@@ -16,6 +16,7 @@ on:
       - "rednote_function_switch_download_patch.py"
       - "rednote_splash_ad_patch.py"
       - "rednote_block_words_patch.py"
+      - "rednote_dynamic_columns_patch.py"
       - "rednote_im_diag_patch.py"
       - "test_build_rednote.py"
       - "test_rednote_signature_compat.py"
@@ -25,6 +26,7 @@ on:
       - "test_rednote_function_switch_download_patch.py"
       - "test_rednote_splash_ad_patch.py"
       - "test_rednote_block_words_patch.py"
+      - "test_rednote_dynamic_columns_patch.py"
       - "tests/**"
       - "requirements.txt"
       - "ks_pkcs12.keystore"
@@ -189,7 +191,7 @@ jobs:
           fi
 
       - name: Run Rednote unit tests
-        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch test_rednote_download_unlock_patch test_rednote_share_download_unlock_patch test_rednote_function_switch_download_patch test_rednote_splash_ad_patch test_rednote_wechat_share_patch test_rednote_block_words_patch
+        run: python -m unittest -v test_build_rednote test_rednote_signature_compat test_rednote_ad_patch test_rednote_download_unlock_patch test_rednote_share_download_unlock_patch test_rednote_function_switch_download_patch test_rednote_splash_ad_patch test_rednote_wechat_share_patch test_rednote_block_words_patch test_rednote_dynamic_columns_patch
 
       - name: Download and verify pinned source for a fresh build
         shell: bash
@@ -254,6 +256,10 @@ jobs:
             args+=(--wechat-share-official-package)
           fi
           if [[ -n "${DYNAMIC_COLUMNS:-}" ]]; then
+            if [[ "$BLOCK_WORDS" != "true" ]]; then
+              echo "--dynamic-columns requires BLOCK_WORDS=true (shared helper DEX)" >&2
+              exit 1
+            fi
             args+=(--dynamic-columns "$DYNAMIC_COLUMNS")
           fi
           "${args[@]}"
@@ -385,7 +391,14 @@ jobs:
           if [[ "$BLOCK_WORDS" == "true" ]]; then
             cat >> release-notes.md <<'NOTES'
 
-          **Pinch-to-resize columns:** REDnote already ships the whole gesture — a scale listener is bound when the device reports as a tablet or a horizontal foldable, the grid is re-laid out on each pinch, and the choice persists. The stock column table, however, ignored the pinch state on the outer screen's width band (always 2) and capped the inner screen at 4. This build rewrites `et.n.e(I)` so the same four dp width bands now yield **2 / 3 / 4 columns on the outer screen** and **3 / 4 / 5 on the inner screen**, three steps each via pinch. Screens narrower than 280dp (cover displays) stay single column, and mid-size bands keep their previous ranges. Only the span-count decision changed: feed requests, payloads and impressions are untouched, and the pinch state is still read through the app's own accessor, so the gesture feedback and the persisted setting behave as before.
+          **Pinch-to-resize columns (小K书设置 → 信息流列数):** REDnote ships the whole gesture already — a scale listener is bound when the device reports as a tablet or a horizontal foldable, the grid re-lays out on each pinch, and the choice persists. What was wrong was the column table: the outer screen's width band ignored the pinch state and always returned 2, and the inner screen's band capped at 4.
+
+          This build leaves REDnote's own width detection untouched and replaces only the table lookup, which now calls a runtime helper. So the maxima are **settings, not constants**:
+
+          - 外屏最多 **4** 列 (2 / 3 / 4 by pinching)
+          - 内屏最多 **5** 列 (3 / 4 / 5 by pinching)
+
+          Change either number in 小K书设置 and return to the feed — no rebuild. The page also shows the measured screen size and the last few band decisions, and **导出诊断 log** writes a text report (device, sizes, current maxima, every decision) to the app's files dir and opens the share sheet, so a wrong band can be diagnosed without adb. Screens narrower than 280dp keep a single column. Feed requests, payloads and impressions are untouched.
 
           **Keyword blocking (小K书设置):** the settings list has a new `小K书设置` row directly below `关于小红书`. Its page stores one keyword list (`SharedPreferences`, one word per line; `,`/`，`/`、`/`;` also separate entries) and saves on leave. A discovery-feed card is hidden when its **note title** matches a keyword (the item's display title, else its raw title); body text, author names, tags and like/view counters are never matched. Matching ignores spaces and `-`/`_`/`/`/`·` separators and is case-insensitive. A hit reuses the same `View.GONE` + zero-height state and the same card-root restore path as the ad-display patch, so recycled cards rebind normally. The page also shows on-device counters (checked cards, hits, last compared title). The filter covers the discovery/home feed only — search results, detail pages and the follow feed are unchanged, and no request, payload or impression is modified. The row is inserted at runtime and re-checked when the settings window regains focus; if the settings adapter differs, the page opens unchanged.
           NOTES
